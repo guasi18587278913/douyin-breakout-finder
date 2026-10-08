@@ -12,7 +12,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from core import Store, StopRun, atomic_json, now
-from product import intake, config_for, review_by_rules, evidence_notes, fetch_prices
+from product import intake, config_for, review_by_rules, evidence_notes, fetch_prices, simple_brief
 from tikhub import TikHubClient
 from workflow import search, verify, write_inbox
 from report import render
@@ -52,7 +52,7 @@ class Session:
         with self.lock:
             if self.status == 'running':
                 raise StopRun('已有任务正在运行，请等待本轮结束。')
-            answers = intake(data)
+            answers = simple_brief(data) if data.get('description') else intake(data)
             config = None
             if self.mode == 'live':
                 if not self.key:
@@ -60,8 +60,9 @@ class Session:
                 if data.get('consent') is not True:
                     raise StopRun('请确认本轮美元预算后再开始。')
                 if not self.pricing:
-                    raise StopRun('请先取得接口报价。')
-                config = config_for(answers, self.pricing, data.get('budget'))
+                    self.pricing = fetch_prices()
+                config = config_for(answers, self.pricing, '0.50')
+                config['max_requests'] = 50
                 # Check quote validity before committing to a run or making calls.
                 temp = type('PriceCheck', (), {'config': config})()
                 Store.pricing_ready(temp, ['search', 'posts', 'stats', 'comments'])
@@ -234,6 +235,8 @@ class Handler(BaseHTTPRequestHandler):
                         raise StopRun('请输入 TikHub Key。')
                     self.session.mode = data['mode']
                     self.session.key = key.strip() if data['mode'] == 'live' else None
+                elif path == '/api/brief':
+                    self.session.answers = simple_brief(data)
                 elif path == '/api/intake':
                     self.session.answers = intake(data)
                 elif path == '/api/prices':

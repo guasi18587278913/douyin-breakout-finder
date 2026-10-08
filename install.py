@@ -136,12 +136,12 @@ def install(source, target, ref=None, backup_root=None):
             identity = hashlib.sha256(str(target).encode()).hexdigest()[:8]
             backup = backup_root / (target.name + '-' + identity + '-' + uuid.uuid4().hex[:8])
             backup.parent.mkdir(parents=True, exist_ok=True)
-            target.rename(backup)
+            shutil.move(str(target), str(backup))
         try:
             stage.rename(target)
         except Exception:
             if backup:
-                backup.rename(target)
+                shutil.move(str(backup), str(target))
             raise
     finally:
         if stage.exists():

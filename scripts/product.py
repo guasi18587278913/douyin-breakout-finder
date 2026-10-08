@@ -114,9 +114,14 @@ def parse_price(payload, endpoint):
     row = payload.get('data', payload)
     if not isinstance(row, dict):
         raise StopRun('价格数据格式发生变化。')
-    if row.get('endpoint', row.get('uri', row.get('path'))) != endpoint:
+    if row.get('endpoint', row.get('endpoint_uri', row.get('uri', row.get('path')))) != endpoint:
         raise StopRun('无法确认报价对应的接口，请在高级设置中核对。')
-    value = row.get('price_usd_per_request')
+    # TikHub endpoint metadata: endpoint_cost is its catalog USD/request value.
+    # Verified against anonymous official responses and tikhub.io/pricing (2026-10-08).
+    native = (payload.get('router') == '/api/v1/tikhub/user/get_endpoint_info'
+              and payload.get('params', {}).get('endpoint') == endpoint
+              and row.get('endpoint_uri') == endpoint)
+    value = row.get('endpoint_cost') if native else row.get('price_usd_per_request')
     if value is None:
         if str(row.get('currency', '')).upper() != 'USD':
             raise StopRun('报价未明确美元单位，不能自动开始收费查询。')
@@ -131,20 +136,46 @@ def parse_price(payload, endpoint):
 
 
 def fetch_prices():
+    from transport import request
     prices = {}
-    opener = urllib.request.build_opener(NoRedirect())
-    try:
-        for op, (_, endpoint) in ENDPOINTS.items():
-            url = BASE + '/api/v1/tikhub/user/get_endpoint_info?' + urllib.parse.urlencode({'endpoint': endpoint})
-            # Anonymous metadata only: no key is sent or account billed by this code.
-            req = urllib.request.Request(url, headers={'Accept': 'application/json', 'User-Agent': 'douyin-breakout-finder/0.2.0'})
-            with opener.open(req, timeout=12) as response:
-                raw = response.read(1024 * 1024 + 1)
-            if len(raw) > 1024 * 1024:
-                raise StopRun('价格数据超过安全大小限制。')
+    for op, (_, endpoint) in ENDPOINTS.items():
+        url = BASE + '/api/v1/tikhub/user/get_endpoint_info?' + urllib.parse.urlencode({'endpoint': endpoint})
+        status, raw = request(url, timeout=12, limit=1024*1024)
+        if status != 200:
+            raise StopRun('暂时无法连接 TikHub，请稍后重试。你的 Key 没有用于这次价格检查。')
+        try:
             prices[op] = parse_price(json.loads(raw), endpoint)
-    except StopRun:
-        raise
-    except Exception:
-        raise StopRun('自动报价暂不可用。请展开高级设置，按 TikHub 后台填写已核实单价；也可以先体验免费示例。')
-    return {'usd_per_request': prices, 'checked_at': now(), 'source_url': BASE + '/api/v1/tikhub/user/get_endpoint_info'}
+        except (ValueError, TypeError):
+            raise StopRun('TikHub 报价格式已变化，维护者需要更新接口适配。')
+    return {'usd_per_request': prices, 'checked_at': now(),
+            'source_url': BASE + '/api/v1/tikhub/user/get_endpoint_info',
+            'unit_source': 'https://tikhub.io/pricing', 'kind': 'endpoint-quote'}
+
+
+FOCUSES = {'all': '', 'tutorial': '教程', 'case': '案例', 'opinion': '观点'}
+
+
+def simple_brief(data):
+    raw = text_field(data, 'description', 500, True)
+    focus = data.get('focus', 'all')
+    if focus not in FOCUSES:
+        raise StopRun('请选择一个研究方向。')
+    # Transparent starter rules, never pretend to be an LLM or invent user intent.
+    topic = raw.strip('。！？?! ')
+    topic = re.split(r'[，,。；;]', topic)[0]
+    topic = re.sub(r'^(?:请|帮我|我想|我希望|想|我要|我在做|我做的是|我正在做|我在分享)+', '', topic)
+    topic = re.sub(r'^(?:了解一下|了解|看看|看一下|研究一下|研究|找一下|找找|查找|寻找|搜索|搜一下|看|找)+', '', topic)
+    topic = re.sub(r'(?:现在有的|最近的|最近|目前的|领域里|领域|里面|里的|里|的一些|一些|的|有一些)*(?:小号爆款|小爆款|爆款视频|爆款内容|高播放视频|对标账号|爆款).*$', '', topic)
+    topic = re.sub(r'(?:现在有的|现在有|现在|最近的|最近|的一些|一些|相关的|相关|的|里|有的)+$', '', topic).strip('，, 。')
+    if not topic or len(topic)>40:
+        raise StopRun('再具体一点：用一个领域或内容主题描述，例如“AI 自媒体”或“电商 AI 自动化”。')
+    topic = topic.strip()
+    topic = re.sub(r'(?i)ai\s*自媒体', 'AI自媒体', topic)
+    query = topic + ((' '+FOCUSES[focus]) if FOCUSES[focus] else '')
+    keywords = [query]
+    anchors = [topic]
+    if topic == 'AI自媒体':
+        keywords = ['AI自媒体'+FOCUSES[focus], 'AI内容创作'+FOCUSES[focus], 'AI短视频'+FOCUSES[focus]]
+        anchors = ['AI自媒体', 'AI内容', 'AI视频', 'AI短视频', 'AI 视频', 'AI写作', 'AI绘画']
+    return dict(topic=topic, goal='topics', audience='', current=raw,
+                keywords=keywords, anchors=anchors, excludes=[], focus=focus)

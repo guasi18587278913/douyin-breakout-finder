@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from core import StopRun, read_json
-from product import intake, contains, parse_price, evidence_notes, review_by_rules
+from product import intake, contains, parse_price, evidence_notes, review_by_rules, simple_brief
 from workflow import apply_review, write_inbox
 from demo import run_demo
 from wizard import make_server, Session, CancellableClient
@@ -23,6 +23,81 @@ spec.loader.exec_module(installer)
 
 
 class TestProduct(unittest.TestCase):
+    def test_free_text_examples_extract_topic_without_configuration(self):
+        for raw in ['我想了解一下AI自媒体现在有的一些小号爆款。','我想看看 AI 自媒体里，小号最近做出了哪些爆款。']:
+            brief=simple_brief({'description':raw})
+            self.assertEqual(brief['topic'],'AI自媒体')
+            self.assertEqual(brief['keywords'],['AI自媒体','AI内容创作','AI短视频'])
+        self.assertEqual(simple_brief({'description':'电商 AI 自动化','focus':'case'})['keywords'],['电商 AI 自动化 案例'])
+
+    def test_native_quote_requires_router_params_and_endpoint(self):
+        endpoint='/api/test'
+        payload={'router':'/api/v1/tikhub/user/get_endpoint_info','params':{'endpoint':endpoint},'data':{'endpoint_uri':endpoint,'endpoint_cost':0.001}}
+        self.assertEqual(parse_price(payload,endpoint),'0.001')
+        payload['params']['endpoint']='/wrong'
+        with self.assertRaises(StopRun):parse_price(payload,endpoint)
+
+    def test_actual_curl_preserves_chinese_quotes_and_backslashes(self):
+        import subprocess, shutil
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from transport import request
+        if not shutil.which('curl'): self.skipTest('curl not available')
+        captured={}
+        class Echo(BaseHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_POST(self):
+                captured['body']=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                captured['auth']=self.headers['Authorization']
+                self.send_response(200);self.end_headers();self.wfile.write(b'{}')
+        server=ThreadingHTTPServer(('127.0.0.1',0),Echo)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        real_run=subprocess.run
+        def local_only(command,**kwargs):
+            # Only this isolated loopback fixture permits HTTP; production remains HTTPS-only.
+            command=list(command);command[command.index('=https')]='=http'
+            return real_run(command,**kwargs)
+        payload={'keyword':'电商 AI 教程 "引号" 和路径 C:\\demo','other':'line1\nline2'}
+        try:
+            with patch('transport.subprocess.run',side_effect=local_only):
+                status,_=request('http://127.0.0.1:%s/'%server.server_port,method='POST',payload=payload,api_key='SYNTHETIC-KEY')
+            self.assertEqual(status,200);self.assertEqual(captured['body'],payload)
+            self.assertEqual(captured['auth'],'Bearer SYNTHETIC-KEY')
+        finally:server.shutdown();server.server_close()
+
+    def test_live_branch_with_fixture_keeps_fixed_limits(self):
+        from demo import ReplayClient
+        from core import now
+        fixture=read_json(ROOT/'assets/demo.json')
+        fixture['queries']['FDE']=list(dict.fromkeys(vid for ids in fixture['queries'].values() for vid in ids))
+        def fake_client(store,**kwargs):
+            replay=ReplayClient.__new__(ReplayClient);replay.store=store;replay.fixture=fixture
+            return replay
+        quote={'usd_per_request':{op:'0.001' for op in ['search','posts','stats','comments']},'checked_at':now(),'source_url':'https://tikhub.io/pricing'}
+        with tempfile.TemporaryDirectory() as folder:
+            session=Session(folder);session.mode='live';session.key='SYNTHETIC-KEY'
+            with patch('wizard.fetch_prices',return_value=quote),patch('wizard.TikHubClient',side_effect=fake_client):
+                session.start({'description':'FDE','consent':True,'budget':'99999'})
+                session.worker.join(10)
+            self.assertEqual(session.status,'done')
+            self.assertGreater(session.summary['qualified_count'],0)
+            config=read_json(session.run_dir/'config.json')
+            self.assertEqual(config['budget_usd'],'0.50');self.assertEqual(config['max_requests'],50)
+            self.assertIsNone(session.key)
+
+    def test_network_key_only_passes_in_stdin_and_redirect_stops(self):
+        from transport import request
+        from unittest.mock import Mock
+        fake=Mock(returncode=0,stdout=b'{}\n200',stderr=b'')
+        with patch('transport.shutil.which',return_value='/usr/bin/curl'),patch('transport.subprocess.run',return_value=fake) as runner:
+            request('https://api.tikhub.io/test',api_key='SYNTHETIC-KEY')
+            args,kwargs=runner.call_args
+            self.assertNotIn('SYNTHETIC-KEY',str(args))
+            self.assertIn(b'SYNTHETIC-KEY',kwargs['input'])
+            self.assertIn('--disable',args[0]);self.assertNotIn('--location',args[0])
+            fake.stdout=b'{}\n302'
+            from core import APIError
+            with self.assertRaises(APIError):request('https://api.tikhub.io/test',api_key='SYNTHETIC-KEY')
+
     def test_intake_deduplicates_and_preserves_boundaries(self):
         a = intake({'topic':'AI 自动化', 'keywords':'AI工作流,AI工作流，自动化', 'excludes':'卖课,招聘'})
         self.assertEqual(a['keywords'], ['AI工作流','自动化'])
@@ -80,7 +155,7 @@ class TestProduct(unittest.TestCase):
             session = Session(folder)
             session.mode, session.key = 'live', 'SYNTHETIC-KEY-FOR-TESTS'
             for data in [{'topic':'AI'}, {'topic':'AI','consent':True,'budget':'1'}]:
-                with self.assertRaises(StopRun):
+                with patch('wizard.fetch_prices', side_effect=StopRun('Quote unavailable')), self.assertRaises(StopRun):
                     session.start(data)
             self.assertEqual(list(Path(folder).iterdir()), [])
 

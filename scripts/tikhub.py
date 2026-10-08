@@ -181,23 +181,20 @@ class TikHubClient:
             url += '?' + urllib.parse.urlencode(params)
         else:
             body = json.dumps(params).encode('utf-8')
-        req = urllib.request.Request(url, data=body, method=method, headers={
-            'Authorization': 'Bearer ' + self.key, 'Content-Type': 'application/json',
-            'Accept': 'application/json', 'User-Agent': 'douyin-breakout-finder/0.2.0'})
-        opener = urllib.request.build_opener(NoRedirect())
+        from transport import request
+        status, raw = request(url, method=method, payload=params if method == 'POST' else None, api_key=self.key)
+        if status == 401:
+            raise StopRun('TikHub Key 无效或已过期，请在右上角重新连接。')
+        if status == 402:
+            raise StopRun('TikHub 余额不足，或该接口不支持免费额度。请到 TikHub 后台检查余额后再试。')
+        if status == 403:
+            raise StopRun('TikHub 拒绝访问。请检查 Key 权限、账号状态与网络；程序没有自动重试。')
+        if status != 200:
+            raise APIError('TikHub 暂时无法完成查询（HTTP %s），已保留当前结果。' % status)
         try:
-            with opener.open(req, timeout=30) as r:
-                b = r.read(32 * 1024 * 1024 + 1)
-                if len(b) > 32 * 1024 * 1024:
-                    raise APIError('Response exceeded the 32 MiB limit.')
-            return json.loads(b.decode('utf-8'))
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                raise StopRun('TikHub authentication or access denied (HTTP %s). Stopped; check the account and key.' % e.code)
-            raise APIError('TikHub HTTP %s; request reservation retained. Check credentials, parameters or service status.' % e.code)
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeError) as e:
-            # Never echo provider bodies, URLs or secrets into logs.
-            raise APIError('TikHub request failed: %s; billing outcome is unconfirmed.' % type(e).__name__)
+            return json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise APIError('TikHub 返回的数据格式异常，请稍后再试。')
 
     def call(self, op, params, refresh=False):
         if op not in ENDPOINTS:
