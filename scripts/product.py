@@ -51,6 +51,7 @@ def config_for(answers, pricing, budget):
     c['scope'] = '%s；目标：%s；受众：%s；纳入词：%s；排除词：%s。' % (
         answers['topic'], GOALS[answers['goal']], answers['audience'] or '未限定',
         '、'.join(answers['anchors']), '、'.join(answers['excludes']) or '无')
+    c['max_search_pages'] = 3
     c['intake'] = answers
     c['pricing'] = pricing
     return validate_config(c)
@@ -66,6 +67,8 @@ def contains(text, term):
 def review_by_rules(store, answers):
     reviews = {}
     for vid, video in store.state['candidates'].items():
+        if video.get('review',{}).get('method')=='human-or-agent' and video['review']['decision']!='pending':
+            continue
         title = video.get('title') or ''
         denied = [term for term in answers['excludes'] if contains(title, term)]
         found = [term for term in answers['anchors'] if contains(title, term)]

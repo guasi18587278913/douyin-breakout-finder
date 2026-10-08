@@ -21,7 +21,7 @@ def record_stop(store, phase, error):
     store.state['stops'].append({'at': now(), 'phase': phase, 'message': str(error)})
     store.save()
 
-def search(store, client, keywords=None, reason=None):
+def search(store, client, keywords=None, reason=None, page_limit=None):
     c, s = store.config, store.state
     keywords = keywords or c['keywords']
     if any(k not in c['keywords'] for k in keywords) and not reason:
@@ -32,7 +32,8 @@ def search(store, client, keywords=None, reason=None):
         q = s['queries'].setdefault(kw, {'pages': 0, 'cursor': 0, 'search_id': '', 'backtrace': '',
                                          'complete': False, 'seen_cursors': [], 'ids': [],
                                          'new_to_run': [], 'reason': reason or 'initial seed'})
-        while not q['complete'] and q['pages'] < c['max_search_pages']:
+        cap=c['max_search_pages'] if page_limit is None else min(c['max_search_pages'],q['pages']+page_limit)
+        while not q['complete'] and q['pages'] < cap:
             params = {'keyword': kw, 'cursor': q['cursor'], 'search_id': q['search_id'],
                       'backtrace': q['backtrace'], 'sort_type': '1',
                       'publish_time': search_period(c['search_days']),
@@ -105,6 +106,8 @@ def apply_review(store, reviews):
         checked[vid] = {'decision': r['decision'], 'reason': r.get('reason', '')[:2000], 'priority': priority, 'method': method}
     for vid, review in checked.items():
         store.state['candidates'][vid]['review'] = review
+        if vid in store.state['results']:
+            store.state['results'][vid]['target']['review']=review
         if vid in store.state['results'] and review['decision'] != 'include':
             store.state['results'][vid].update(status='excluded', reason='相关性复核未纳入')
     store.save()

@@ -11,7 +11,9 @@ import webbrowser
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from core import Store, StopRun, atomic_json, now
+from core import Store, StopRun, atomic_json, now, read_json
+from bridge import FileBridge, AssistanceNeeded
+from research import review_packet, accept_review, analysis_packet, accept_research, report_state
 from product import intake, config_for, review_by_rules, evidence_notes, fetch_prices, simple_brief
 from tikhub import TikHubClient
 from workflow import search, verify, write_inbox
@@ -25,7 +27,7 @@ EXPORTS = {'report.html': 'text/html; charset=utf-8', 'results.csv': 'text/csv; 
 
 
 class Session:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, bridge_dir=None, bridge_timeout=600):
         self.data_dir = Path(data_dir).resolve()
         self.token = secrets.token_urlsafe(32)
         self.key = None
@@ -40,11 +42,24 @@ class Session:
         self.last_active = time.monotonic()
         self.cancelled = threading.Event()
         self.worker = None
+        self.bridge = FileBridge(bridge_dir,self.cancelled,bridge_timeout) if bridge_dir else None
 
     def snapshot(self):
         with self.lock:
+            if self.status!='running' and self.run_dir and not (self.run_dir/'.run.lock').exists():
+                try:
+                    refreshed=read_json(self.run_dir/'summary.json',{})
+                    if refreshed and refreshed.get('generated_at')!=(self.summary or {}).get('generated_at'):
+                        stored=Store(self.run_dir)
+                        readiness=report_state(stored)
+                        if refreshed.get('research_status')==readiness['status']:
+                            self.summary=refreshed
+                            self.status='done' if readiness['status']=='complete' else 'needs_analysis'
+                            self.message='智能体已更新研究报告。' if self.status=='done' else '阶段报告已更新，仍有证据待补。'
+                except (StopRun,OSError,ValueError):
+                    pass
             return dict(status=self.status, message=self.message, mode=self.mode,
-                        key_ready=bool(self.key), pricing=self.pricing, answers=self.answers,
+                        key_ready=bool(self.key), assistant_connected=bool(self.bridge and self.bridge.available()), pricing=self.pricing, answers=self.answers,
                         summary=self.summary, report_url='/report/report.html' if self.summary else None,
                         output_dir=str(self.run_dir) if self.run_dir else None, version='0.2.0')
 
@@ -57,6 +72,8 @@ class Session:
             if self.mode == 'live':
                 if not self.key:
                     raise StopRun('请先填入本次会话的 TikHub Key。')
+                if not self.bridge or not self.bridge.available():
+                    raise StopRun('分析助手尚未接入。请回到启动 Skill 的智能体会话，说“继续完成小号爆款研究”；接入前不会发起收费查询。')
                 if data.get('consent') is not True:
                     raise StopRun('请确认本轮美元预算后再开始。')
                 if not self.pricing:
@@ -71,6 +88,7 @@ class Session:
             self.answers = answers
             self.run_dir = self.data_dir / ('run-' + time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(4))
             self.summary = None
+            if self.bridge: atomic_json(self.bridge.folder/'status.json',{'terminal':False})
             self.cancelled.clear()
             self.status, self.message = 'running', '正在准备本轮研究…'
             thread = threading.Thread(target=self.run, args=(config,), daemon=True)
@@ -83,26 +101,44 @@ class Session:
             if self.mode == 'demo':
                 self.message = '正在用合成的 FDE 数据走完整流程；不会联网。'
                 store, _ = run_demo(self.run_dir)
-                evidence_notes(store)
                 summary = render(store)
             else:
+                self.message = '正在确认智能体已经接入本轮研究…'
+                def ready(answer):
+                    if not isinstance(answer,dict) or answer.get('ready') is not True:
+                        raise StopRun('智能体需确认已接入当前研究。')
+                    return True
+                self.bridge.ask('prepare-research',{'run_dir':str(self.run_dir),'topic':config['topic'],'budget_usd':config['budget_usd'],'max_requests':config['max_requests']},ready)
                 store = Store.create(self.run_dir, config)
                 with store.lock():
                     client = TikHubClient(store, allow_paid=True, api_key=self.key)
                     client = CancellableClient(client, self.cancelled)
-                    self.message = '正在搜索候选，并按你确认的纳入词与排除词初筛…'
-                    search(store, client)
-                    reviews = review_by_rules(store, self.answers)
-                    if any(r['decision'] == 'include' for r in reviews.values()):
-                        self.message = '正在核对同作者邻近作品与真实播放量…'
-                        verify(store, client)
-                    evidence_notes(store)
+                    self.message = '正在搜索本轮候选…'
+                    search(store, client, page_limit=1)
+                    review_by_rules(store, self.answers)
                     write_inbox(store)
+                    self.summary = render(store)
+                    for round_number in range(3):
+                        self.message = '智能体正在复核内容相关性，并判断是否需要补搜…'
+                        response=self.bridge.ask('semantic-review',review_packet(store,round_number),lambda answer:accept_review(store,answer))
+                        if not response['next_keywords'] or round_number==2:break
+                        self.message = '按智能体的研究判断补充候选，仍使用本轮原有额度…'
+                        search(store,client,response['next_keywords'],response['search_reason'],page_limit=1)
+                        review_by_rules(store,self.answers)
+                        write_inbox(store)
+                        self.summary=render(store)
+                    if any(v['review']['decision']=='include' for v in store.state['candidates'].values()):
+                        self.message = '正在核对同作者邻近作品和播放量…'
+                        verify(store, client)
+                    write_inbox(store)
+                    self.summary=render(store)
+                    self.message = '智能体正在阅读内容证据、整理主题发现和逐条案例…'
+                    self.bridge.ask('content-analysis',analysis_packet(store),lambda answer:accept_research(store,answer))
                     summary = render(store)
             with self.lock:
                 self.summary = summary
-                self.status = 'done'
-                self.message = '报告已生成。' if not summary['stops'] else '部分查询停止，已保存现有报告，请查看报告中的停止原因。'
+                self.status = 'done' if summary.get('report_complete') else 'needs_analysis'
+                self.message = '研究报告已生成。' if summary.get('report_complete') else '已保存阶段报告；仍有内容证据或相关性判断待补充，尚未完成完整研究。'
         except Exception as error:
             # Do not serialize exception bodies from providers or keys.
             message = str(error) if isinstance(error, StopRun) else '本轮未能完成，请保留运行目录并联系维护者。'
@@ -117,9 +153,11 @@ class Session:
                 except Exception:
                     pass
             with self.lock:
-                self.status, self.message = 'error', message
+                self.status, self.message = ('needs_analysis' if isinstance(error,AssistanceNeeded) else 'error'), message
         finally:
             self.key = None
+            if self.bridge:
+                atomic_json(self.bridge.folder/'status.json',{'terminal':True,'at':time.time(),'request_id':self.bridge.last_request_id,'status':self.status,'run_dir':str(self.run_dir),'message':self.message})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -274,10 +312,10 @@ class CancellableClient:
         return self.client.call(*args, **kwargs)
 
 
-def make_server(data_dir):
+def make_server(data_dir, bridge_dir=None, bridge_timeout=600):
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
-    server.session = Session(data_dir)
+    server.session = Session(data_dir,bridge_dir,bridge_timeout)
     return server
 
 
@@ -285,13 +323,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', default=str(Path.home() / '.local' / 'share' / 'douyin-breakout-finder'))
     parser.add_argument('--ready-file')
+    parser.add_argument('--bridge-dir')
     parser.add_argument('--no-open', action='store_true')
     args = parser.parse_args()
     if os.name != 'nt':
         os.umask(0o077)
-    server = make_server(args.data_dir)
+    server = make_server(args.data_dir,args.bridge_dir)
     url = 'http://127.0.0.1:%s/#%s' % (server.server_port, server.session.token)
-    ready = {'url': url, 'pid': os.getpid(), 'data_dir': str(server.session.data_dir)}
+    ready = {'url': url, 'pid': os.getpid(), 'data_dir': str(server.session.data_dir), 'bridge_dir':args.bridge_dir}
     if args.ready_file:
         atomic_json(args.ready_file, ready)
     print(json.dumps(ready, ensure_ascii=False), flush=True)

@@ -34,7 +34,8 @@ try:
   with page.expect_popup() as popup:page.locator('#report-link').click()
   report=popup.value;report.wait_for_load_state()
   expect(report.get_by_text('离线演示：全部为合成数据。',exact=True)).to_be_visible()
-  assert '未观看视频' in report.locator('body').inner_text()
+  assert '内容如何展开' in report.locator('body').inner_text()
+  assert '合成' in report.locator('body').inner_text()
   report.screenshot(path=str(out/'05-report.png'),full_page=True)
   report.screenshot(path=str(out/'05-report-first-screen.png'))
   checks.append('report distinguishes evidence-only notes and synthetic data')
@@ -53,6 +54,21 @@ try:
   assert state['status']=='done' and state['summary']['demo'] is True
   assert state['summary']['qualified_count']==1 and state['summary']['pending_count']==1
   checks.append('fixture truth: 1 qualified, 1 pending')
+  from core import Store
+  from research import accept_research
+  from report import render
+  import copy
+  store=Store(server.session.run_dir)
+  full={key:copy.deepcopy(store.state['research'][key]) for key in ['headline','lead','findings','categories','cases','next_topics','limitations']}
+  partial=copy.deepcopy(full)
+  for vid,case in partial['cases'].items():case.update(evidence_ids=[vid+':title'],opening='',outline=[])
+  with store.lock():accept_research(store,partial);partial_summary=render(store)
+  server.session.status='needs_analysis';server.session.summary=partial_summary
+  page.reload();expect(page.locator('#report-link-label')).to_have_text('查看阶段报告')
+  with store.lock():accept_research(store,full);render(store)
+  expect(page.locator('#report-link-label')).to_have_text('打开完整研究报告',timeout=8000)
+  expect(page.locator('.highlight')).to_have_count(1)
+  checks.append('offline analysis completion updates the open page without duplicate cards')
   page.locator('#connect').click();page.locator('#key').fill('SYNTHETIC-E2E-KEY-NOT-REAL');page.locator('#save-key').click()
   expect(page.locator('#key-dialog')).to_be_hidden()
   assert 'SYNTHETIC-E2E-KEY-NOT-REAL' not in context.request.get(base+'/api/state').text()

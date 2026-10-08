@@ -17,7 +17,8 @@ def main():
     a = p.parse_args()
     folder = Path(tempfile.mkdtemp(prefix='douyin-wizard-'))
     ready = folder / 'ready.json'
-    command = [sys.executable, str(Path(__file__).with_name('wizard.py')), '--ready-file', str(ready)]
+    bridge=folder/'agent'
+    command = [sys.executable, str(Path(__file__).with_name('wizard.py')), '--ready-file', str(ready), '--bridge-dir', str(bridge)]
     if a.no_open:
         command.append('--no-open')
     if a.data_dir:

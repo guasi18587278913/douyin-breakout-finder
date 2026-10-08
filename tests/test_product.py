@@ -75,10 +75,22 @@ class TestProduct(unittest.TestCase):
         quote={'usd_per_request':{op:'0.001' for op in ['search','posts','stats','comments']},'checked_at':now(),'source_url':'https://tikhub.io/pricing'}
         with tempfile.TemporaryDirectory() as folder:
             session=Session(folder);session.mode='live';session.key='SYNTHETIC-KEY'
+            bridge_folder=Path(folder)/'bridge'
+            class FixtureBridge:
+                folder=bridge_folder
+                last_request_id='fixture'
+                def available(self):return True
+                def ask(self,stage,payload,accept):
+                    if stage=='prepare-research':return accept({'ready':True})
+                    if stage=='semantic-review':return accept({'reviews':{v['id']:{'decision':'include','reason':'合成测试的同主题候选','priority':1} for v in payload['candidates']},'next_keywords':[]})
+                    ids=[r['target']['id'] for r in payload['results'] if r['status'] in ('qualified','limited')]
+                    cases={vid:{'category':'合成案例','summary':'标题级观察','title_angle':'明确主题','opening':'','outline':[],'takeaway':'需要补充正文证据','limitations':'这是测试数据','evidence_ids':[vid+':title']} for vid in ids}
+                    return accept({'headline':'合成研究','lead':'验证真实流程分支，仍缺正文证据。','findings':[{'title':'主题相符','text':'合成样例用于检查数据与分析分工。','video_ids':ids}], 'categories':[{'title':'任务演示','text':'合成案例类别。','video_ids':ids}],'cases':cases,'next_topics':[{'title':'用自己的任务验证','text':'只提出合成选题假设。','video_ids':ids}],'limitations':['合成数据，无真实网络调用。']})
+            session.bridge=FixtureBridge()
             with patch('wizard.fetch_prices',return_value=quote),patch('wizard.TikHubClient',side_effect=fake_client):
                 session.start({'description':'FDE','consent':True,'budget':'99999'})
                 session.worker.join(10)
-            self.assertEqual(session.status,'done')
+            self.assertEqual(session.status,'needs_analysis')
             self.assertGreater(session.summary['qualified_count'],0)
             config=read_json(session.run_dir/'config.json')
             self.assertEqual(config['budget_usd'],'0.50');self.assertEqual(config['max_requests'],50)
@@ -133,6 +145,7 @@ class TestProduct(unittest.TestCase):
     def test_review_inbox_preserves_keyword_provenance(self):
         with tempfile.TemporaryDirectory() as folder:
             store, _ = run_demo(Path(folder)/'run')
+            for v in store.state['candidates'].values():v['review']={'decision':'pending','reason':''}
             review_by_rules(store, intake({'topic':'FDE'}))
             write_inbox(store)
             inbox=read_json(store.root/'review-inbox.json')
