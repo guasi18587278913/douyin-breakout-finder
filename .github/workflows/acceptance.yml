@@ -1,0 +1,73 @@
+name: Public install and browser acceptance
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'assets/**'
+      - 'tests/**'
+      - 'install.py'
+      - 'project.json'
+      - 'tsconfig.json'
+      - 'SKILL.md'
+      - '.github/workflows/**'
+permissions:
+  contents: read
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.9'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.12'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Core, budget, key boundary and installer tests
+        run: python -m unittest discover -s tests -v
+      - name: Portable installer
+        run: python install.py --target "${{ runner.temp }}/portable-skills/douyin-breakout-finder"
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax and type checks
+        run: |
+          node --check assets/wizard.js
+          npx --yes --package typescript@5.7.3 tsc -p tsconfig.json
+      - name: Public download without GitHub credentials
+        run: python install.py --download --ref "$GITHUB_SHA" --target "$RUNNER_TEMP/public-install/douyin-breakout-finder"
+      - name: Browser test dependencies
+        run: |
+          pip install playwright==1.58.0
+          python -m playwright install --with-deps chromium
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-noto-cjk
+      - name: Browser acceptance against downloaded installation
+        run: python tests/browser_e2e.py --bundle "$RUNNER_TEMP/public-install/douyin-breakout-finder" --out artifacts/remote-acceptance
+      - name: Screenshots, reports and acceptance record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-acceptance
+          path: artifacts/remote-acceptance/
+          retention-days: 30

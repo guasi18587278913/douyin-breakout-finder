@@ -1,0 +1,4 @@
+interface:
+  display_name: "抖音小号爆款发现"
+  short_description: "按主题查找小号高播放视频，核验同作者对照数据并记录接口费用"
+  default_prompt: "使用 $douyin-breakout-finder 查找指定主题的抖音小号爆款，先说明关键词、筛选标准和预算。"

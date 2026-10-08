@@ -1,0 +1,512 @@
+{
+  "notice": "Synthetic data for offline testing only. No real people or claims.",
+  "as_of": "2026-10-08T12:00:00+00:00",
+  "videos": {
+    "9900000000000000100": {
+      "aweme_id": "9900000000000000100",
+      "desc": "FDE 企业落地演示 1",
+      "create_time": 1789387200,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 999,
+        "play_count": 0
+      }
+    },
+    "9900000000000000101": {
+      "aweme_id": "9900000000000000101",
+      "desc": "业务方法示例 1",
+      "create_time": 1789473600,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 11,
+        "play_count": 0
+      }
+    },
+    "9900000000000000102": {
+      "aweme_id": "9900000000000000102",
+      "desc": "业务方法示例 2",
+      "create_time": 1789214400,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 12,
+        "play_count": 0
+      }
+    },
+    "9900000000000000103": {
+      "aweme_id": "9900000000000000103",
+      "desc": "业务方法示例 3",
+      "create_time": 1789560000,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 13,
+        "play_count": 0
+      }
+    },
+    "9900000000000000104": {
+      "aweme_id": "9900000000000000104",
+      "desc": "业务方法示例 4",
+      "create_time": 1789128000,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 14,
+        "play_count": 0
+      }
+    },
+    "9900000000000000105": {
+      "aweme_id": "9900000000000000105",
+      "desc": "业务方法示例 5",
+      "create_time": 1789646400,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 15,
+        "play_count": 0
+      }
+    },
+    "9900000000000000106": {
+      "aweme_id": "9900000000000000106",
+      "desc": "业务方法示例 6",
+      "create_time": 1789041600,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 16,
+        "play_count": 0
+      }
+    },
+    "9900000000000000107": {
+      "aweme_id": "9900000000000000107",
+      "desc": "业务方法示例 7",
+      "create_time": 1789732800,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 17,
+        "play_count": 0
+      }
+    },
+    "9900000000000000108": {
+      "aweme_id": "9900000000000000108",
+      "desc": "业务方法示例 8",
+      "create_time": 1788955200,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 18,
+        "play_count": 0
+      }
+    },
+    "9900000000000000109": {
+      "aweme_id": "9900000000000000109",
+      "desc": "业务方法示例 9",
+      "create_time": 1789819200,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 19,
+        "play_count": 0
+      }
+    },
+    "9900000000000000110": {
+      "aweme_id": "9900000000000000110",
+      "desc": "业务方法示例 10",
+      "create_time": 1788868800,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor1",
+        "uid": "demo1",
+        "nickname": "演示作者1",
+        "follower_count": 800
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 20,
+        "play_count": 0
+      }
+    },
+    "9900000000000000200": {
+      "aweme_id": "9900000000000000200",
+      "desc": "FDE 企业落地演示 2",
+      "create_time": 1789387200,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 998,
+        "play_count": 0
+      }
+    },
+    "9900000000000000201": {
+      "aweme_id": "9900000000000000201",
+      "desc": "业务方法示例 1",
+      "create_time": 1789473600,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 11,
+        "play_count": 0
+      }
+    },
+    "9900000000000000202": {
+      "aweme_id": "9900000000000000202",
+      "desc": "业务方法示例 2",
+      "create_time": 1789214400,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 12,
+        "play_count": 0
+      }
+    },
+    "9900000000000000203": {
+      "aweme_id": "9900000000000000203",
+      "desc": "业务方法示例 3",
+      "create_time": 1789560000,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 13,
+        "play_count": 0
+      }
+    },
+    "9900000000000000204": {
+      "aweme_id": "9900000000000000204",
+      "desc": "业务方法示例 4",
+      "create_time": 1789128000,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 14,
+        "play_count": 0
+      }
+    },
+    "9900000000000000205": {
+      "aweme_id": "9900000000000000205",
+      "desc": "业务方法示例 5",
+      "create_time": 1789646400,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 15,
+        "play_count": 0
+      }
+    },
+    "9900000000000000206": {
+      "aweme_id": "9900000000000000206",
+      "desc": "业务方法示例 6",
+      "create_time": 1789041600,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 16,
+        "play_count": 0
+      }
+    },
+    "9900000000000000207": {
+      "aweme_id": "9900000000000000207",
+      "desc": "业务方法示例 7",
+      "create_time": 1789732800,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 17,
+        "play_count": 0
+      }
+    },
+    "9900000000000000208": {
+      "aweme_id": "9900000000000000208",
+      "desc": "业务方法示例 8",
+      "create_time": 1788955200,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 18,
+        "play_count": 0
+      }
+    },
+    "9900000000000000209": {
+      "aweme_id": "9900000000000000209",
+      "desc": "业务方法示例 9",
+      "create_time": 1789819200,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 19,
+        "play_count": 0
+      }
+    },
+    "9900000000000000210": {
+      "aweme_id": "9900000000000000210",
+      "desc": "业务方法示例 10",
+      "create_time": 1788868800,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor2",
+        "uid": "demo2",
+        "nickname": "演示作者2",
+        "follower_count": 1200
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 20,
+        "play_count": 0
+      }
+    },
+    "9900000000000000300": {
+      "aweme_id": "9900000000000000300",
+      "desc": "FDE 企业落地演示 3",
+      "create_time": 1789387200,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor3",
+        "uid": "demo3",
+        "nickname": "演示作者3",
+        "follower_count": 300
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 997,
+        "play_count": 0
+      }
+    },
+    "9900000000000000301": {
+      "aweme_id": "9900000000000000301",
+      "desc": "业务方法示例 1",
+      "create_time": 1789473600,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor3",
+        "uid": "demo3",
+        "nickname": "演示作者3",
+        "follower_count": 300
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 11,
+        "play_count": 0
+      }
+    },
+    "9900000000000000302": {
+      "aweme_id": "9900000000000000302",
+      "desc": "业务方法示例 2",
+      "create_time": 1789214400,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor3",
+        "uid": "demo3",
+        "nickname": "演示作者3",
+        "follower_count": 300
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 12,
+        "play_count": 0
+      }
+    },
+    "9900000000000000303": {
+      "aweme_id": "9900000000000000303",
+      "desc": "业务方法示例 3",
+      "create_time": 1789560000,
+      "author": {
+        "sec_uid": "MS4wLjABAAAAdemoAuthor3",
+        "uid": "demo3",
+        "nickname": "演示作者3",
+        "follower_count": 300
+      },
+      "is_top": 0,
+      "statistics": {
+        "digg_count": 13,
+        "play_count": 0
+      }
+    }
+  },
+  "authors": {
+    "MS4wLjABAAAAdemoAuthor1": [
+      "9900000000000000109",
+      "9900000000000000107",
+      "9900000000000000105",
+      "9900000000000000103",
+      "9900000000000000101",
+      "9900000000000000100",
+      "9900000000000000102",
+      "9900000000000000104",
+      "9900000000000000106",
+      "9900000000000000108",
+      "9900000000000000110"
+    ],
+    "MS4wLjABAAAAdemoAuthor2": [
+      "9900000000000000209",
+      "9900000000000000207",
+      "9900000000000000205",
+      "9900000000000000203",
+      "9900000000000000201",
+      "9900000000000000200",
+      "9900000000000000202",
+      "9900000000000000204",
+      "9900000000000000206",
+      "9900000000000000208",
+      "9900000000000000210"
+    ],
+    "MS4wLjABAAAAdemoAuthor3": [
+      "9900000000000000303",
+      "9900000000000000301",
+      "9900000000000000300",
+      "9900000000000000302"
+    ]
+  },
+  "plays": {
+    "9900000000000000100": 25000,
+    "9900000000000000101": 1000,
+    "9900000000000000102": 1000,
+    "9900000000000000103": 1000,
+    "9900000000000000104": 1000,
+    "9900000000000000105": 1000,
+    "9900000000000000106": 1000,
+    "9900000000000000107": 1000,
+    "9900000000000000108": 1000,
+    "9900000000000000109": 1000,
+    "9900000000000000110": 1000,
+    "9900000000000000200": 9000,
+    "9900000000000000201": 1000,
+    "9900000000000000202": 1000,
+    "9900000000000000203": 1000,
+    "9900000000000000204": 1000,
+    "9900000000000000205": 1000,
+    "9900000000000000206": 1000,
+    "9900000000000000207": 1000,
+    "9900000000000000208": 1000,
+    "9900000000000000209": 1000,
+    "9900000000000000210": 1000,
+    "9900000000000000300": 15000,
+    "9900000000000000301": 1000,
+    "9900000000000000302": 1000,
+    "9900000000000000303": 1000
+  },
+  "queries": {
+    "FDE 实战": [
+      "9900000000000000100",
+      "9900000000000000200",
+      "9900000000000000300"
+    ],
+    "FDE 交付": [
+      "9900000000000000100",
+      "9900000000000000300"
+    ]
+  },
+  "reviews": {
+    "9900000000000000100": {
+      "decision": "include",
+      "reason": "演示数据：标题明确讨论 FDE 企业落地。",
+      "priority": 1
+    },
+    "9900000000000000200": {
+      "decision": "include",
+      "reason": "演示数据：标题明确讨论 FDE 企业落地。",
+      "priority": 1
+    },
+    "9900000000000000300": {
+      "decision": "include",
+      "reason": "演示数据：标题明确讨论 FDE 企业落地。",
+      "priority": 1
+    }
+  }
+}
