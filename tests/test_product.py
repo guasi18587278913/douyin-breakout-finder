@@ -151,7 +151,7 @@ class TestProduct(unittest.TestCase):
             apply_review(store,inbox)
             self.assertTrue(all(v['review']['method']=='keyword-rule' for v in store.state['candidates'].values()))
             render(store)
-            self.assertIn('内容语义仍待复核',(store.root/'report.html').read_text())
+            self.assertIn('内容语义仍待复核',(store.root/'report.html').read_text(encoding='utf-8'))
 
     def test_cancel_prevents_following_paid_call(self):
         from unittest.mock import Mock
@@ -184,7 +184,7 @@ class TestInstaller(unittest.TestCase):
             self.assertEqual(read_json(target/'.installation.json')['client'], 'workbuddy')
             self.assertTrue(Path(second['backup']).is_dir())
             self.assertNotEqual(Path(second['backup']).parent, target.parent)
-            self.assertEqual((data/'keep.txt').read_text(),'my data')
+            self.assertEqual((data/'keep.txt').read_text(encoding='utf-8'),'my data')
 
     def test_reject_modified_unknown_and_symlink_install(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -192,7 +192,7 @@ class TestInstaller(unittest.TestCase):
             installer.install(ROOT,target)
             (target/'SKILL.md').write_text('local change')
             with self.assertRaises(ValueError): installer.install(ROOT,target)
-            self.assertEqual((target/'SKILL.md').read_text(),'local change')
+            self.assertEqual((target/'SKILL.md').read_text(encoding='utf-8'),'local change')
             unknown = Path(folder)/'unknown'; unknown.mkdir()
             with self.assertRaises(ValueError): installer.install(ROOT,unknown)
 

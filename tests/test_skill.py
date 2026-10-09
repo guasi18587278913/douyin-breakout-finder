@@ -136,8 +136,8 @@ class TestBudgetAndCache(unittest.TestCase):
             return {'code':200,'data':{'comments':[{'text':os.environ['TIKHUB_API_KEY'],'digg_count':0}]}}
         cl=TikHubClient(self.s,True,transport=tr);cl.call('comments',{'aweme_id':'1234567890123456789','cursor':0,'count':20})
         for p in self.s.root.rglob('*.json'):
-            self.assertNotIn('TEST_SECRET_NOT_A_REAL_KEY',p.read_text())
-        self.assertNotIn('TEST_SECRET_NOT_A_REAL_KEY',(self.s.root/'requests.jsonl').read_text())
+            self.assertNotIn('TEST_SECRET_NOT_A_REAL_KEY',p.read_text(encoding='utf-8'))
+        self.assertNotIn('TEST_SECRET_NOT_A_REAL_KEY',(self.s.root/'requests.jsonl').read_text(encoding='utf-8'))
     def test_config_cannot_reset_budget(self):
         c=copy.deepcopy(self.c);c['budget_usd']='100';atomic_json(self.s.root/'config.json',c)
         with self.assertRaises(StopRun):Store(self.s.root)
@@ -218,13 +218,13 @@ class TestWorkflow(unittest.TestCase):
             self.assertEqual({r['status'] for r in s.state['results'].values()}, {'qualified','below_threshold','pending'})
             self.assertEqual(str(s.reserved_cost()),'0')
             self.assertEqual(s.state['results']['9900000000000000100']['ratio'],25)
-            self.assertNotIn('https://www.douyin.com/video/',(s.root/'report.html').read_text())
+            self.assertNotIn('https://www.douyin.com/video/',(s.root/'report.html').read_text(encoding='utf-8'))
             with self.assertRaises(StopRun):TikHubClient(s,True)
     def test_report_escapes_text_and_csv_formulas(self):
         with tempfile.TemporaryDirectory() as td:
             s,_=run_demo(Path(td)/'demo');vid='9900000000000000100'
             annotate(s,{vid:{'basis':'title-description','evidence_note':'title only','summary':'<script>alert(1)</script>'}})
-            render(s);h=(s.root/'report.html').read_text()
+            render(s);h=(s.root/'report.html').read_text(encoding='utf-8')
             self.assertNotIn('<script>alert(1)</script>',h);self.assertIn('&lt;script&gt;',h)
             self.assertTrue(csv_safe(' =1+1').startswith("'"))
     def test_semantic_review_required_and_validated(self):

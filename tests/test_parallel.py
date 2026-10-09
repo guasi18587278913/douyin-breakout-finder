@@ -47,7 +47,7 @@ class ParallelContract(unittest.TestCase):
         self.assertEqual(str(self.store.reserved_cost()),'0.005')
         self.assertEqual(len(self.store.reservations()),5)
         self.assertEqual(sum(isinstance(error,BudgetStop) for _,error in results),7)
-        lines=(self.store.root/'requests.jsonl').read_text().splitlines()
+        lines=(self.store.root/'requests.jsonl').read_text(encoding='utf-8').splitlines()
         self.assertEqual(len(lines),15)
         self.assertTrue(all(isinstance(json.loads(line),dict) for line in lines))
 

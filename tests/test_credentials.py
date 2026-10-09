@@ -1,6 +1,7 @@
 import concurrent.futures
 import http.client
 import json
+import multiprocessing
 import os
 import stat
 import sys
@@ -11,11 +12,24 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from credentials import CredentialStore,CredentialError,NAME,windows_crypt
+from credentials import CredentialStore,CredentialError,NAME,LOCK_NAME,windows_crypt
 from wizard import Session,make_server
 from core import StopRun,now
 
 KEY='SYNTHETIC-REMEMBER-KEY-ONLY'
+
+
+def save_fake_key_in_child(args, barrier=None):
+    directory,value=args
+    if barrier is not None:barrier.wait(timeout=10)
+    CredentialStore(directory).save(value)
+    return True
+
+
+def crash_before_replace(args):
+    directory,value=args
+    with patch('credentials.os.replace',side_effect=lambda *a,**kw:os._exit(23)):
+        CredentialStore(directory).save(value)
 
 
 class PrivateStorage(unittest.TestCase):
@@ -29,7 +43,7 @@ class PrivateStorage(unittest.TestCase):
     def test_save_restart_load_and_forget_only_remove_key(self):
         self.store.save(KEY);self.assertEqual(CredentialStore(self.root).load(),KEY)
         (self.root/'keep.txt').write_text('unrelated');self.store.forget();self.assertIsNone(self.store.load())
-        self.assertEqual((self.root/'keep.txt').read_text(),'unrelated')
+        self.assertEqual((self.root/'keep.txt').read_text(encoding='utf-8'),'unrelated')
         if os.name!='nt':self.assertEqual(stat.S_IMODE(self.root.stat().st_mode),0o700)
 
     @unittest.skipIf(os.name=='nt','POSIX mode checks')
@@ -59,7 +73,7 @@ class PrivateStorage(unittest.TestCase):
         self.root.mkdir(mode=0o700);target=Path(self.temp.name)/'outside';target.write_text('unrelated')
         (self.root/NAME).symlink_to(target)
         with self.assertRaises(CredentialError):self.store.load()
-        self.store.forget();self.assertEqual(target.read_text(),'unrelated');self.assertFalse((self.root/NAME).exists())
+        self.store.forget();self.assertEqual(target.read_text(encoding='utf-8'),'unrelated');self.assertFalse((self.root/NAME).exists())
 
     @unittest.skipIf(os.name=='nt','POSIX link test')
     def test_hardlinked_secret_is_rejected(self):
@@ -70,12 +84,53 @@ class PrivateStorage(unittest.TestCase):
         self.store.save(KEY)
         with patch('credentials.os.replace',side_effect=OSError('SYNTHETIC-NEW-KEY')),self.assertRaises(CredentialError) as error:self.store.save('SYNTHETIC-NEW-KEY')
         self.assertNotIn('SYNTHETIC-NEW-KEY',str(error.exception));self.assertEqual(self.store.load(),KEY)
-        self.assertEqual([p.name for p in self.root.iterdir()],[NAME])
+        self.assertEqual({p.name for p in self.root.iterdir()},{NAME,LOCK_NAME})
 
     def test_concurrent_saves_are_complete_records(self):
         values=[KEY+str(i) for i in range(8)]
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:list(pool.map(self.store.save,values))
-        self.assertIn(self.store.load(),values);self.assertEqual(len(list(self.root.iterdir())),1)
+        self.assertIn(self.store.load(),values);self.assertEqual({p.name for p in self.root.iterdir()},{NAME,LOCK_NAME})
+
+    def test_multiple_instances_and_processes_share_the_same_store_lock(self):
+        self.store.save(KEY)
+        values=[KEY+str(i) for i in range(8)]
+        def save(value):CredentialStore(self.root).save(value)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:list(pool.map(save,values))
+        self.assertIn(self.store.load(),values)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=2,mp_context=multiprocessing.get_context('spawn')) as pool:
+            self.assertTrue(all(pool.map(save_fake_key_in_child,[(str(self.root),v) for v in values])))
+        self.assertIn(self.store.load(),values)
+        self.assertEqual({p.name for p in self.root.iterdir()},{NAME,LOCK_NAME})
+        self.store.forget()
+        self.assertIsNone(self.store.load())
+
+    def test_first_save_from_multiple_processes_uses_an_empty_directory(self):
+        root=Path(self.temp.name)/'cold-private';values=[KEY+str(i) for i in range(4)]
+        context=multiprocessing.get_context('spawn');barrier=context.Barrier(4)
+        children=[context.Process(target=save_fake_key_in_child,args=((str(root),value),barrier)) for value in values]
+        try:
+            for process in children:process.start()
+            for process in children:process.join(15)
+            self.assertEqual([process.exitcode for process in children],[0]*4)
+            self.assertIn(CredentialStore(root).load(),values)
+        finally:
+            for process in children:
+                if process.is_alive():process.terminate();process.join(3)
+
+    def test_forget_cleans_own_temporary_key_after_writer_crash(self):
+        self.store.save(KEY);(self.root/'keep.txt').write_text('unrelated',encoding='utf-8')
+        context=multiprocessing.get_context('spawn')
+        process=context.Process(target=crash_before_replace,args=((str(self.root),KEY+'-CRASH'),))
+        process.start();process.join(15)
+        try:
+            self.assertEqual(process.exitcode,23)
+            self.assertEqual(len(list(self.root.glob('.key-*.tmp'))),1)
+            self.assertEqual(self.store.load(),KEY)
+            self.store.forget()
+            self.assertIsNone(self.store.load())
+            self.assertEqual({p.name for p in self.root.iterdir()},{'keep.txt',LOCK_NAME})
+        finally:
+            if process.is_alive():process.terminate();process.join(3)
 
     def test_bad_data_and_invalid_key_do_not_echo_secrets(self):
         for key in ('',None,'a\nb','x'*2049):

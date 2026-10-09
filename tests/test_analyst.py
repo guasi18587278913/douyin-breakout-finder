@@ -125,7 +125,7 @@ class AdapterContract(unittest.TestCase):
                 self.assertEqual(s.status, 'done', s.message)
                 self.assertTrue(s.summary['report_complete'])
                 self.assertIsNone(s.key)
-                self.assertIn('自动生成的离线合成报告', (s.run_dir / 'report.html').read_text())
+                self.assertIn('自动生成的离线合成报告', (s.run_dir / 'report.html').read_text(encoding='utf-8'))
 
     def test_title_only_selection_analysis_finishes_without_claiming_video_body(self):
         with tempfile.TemporaryDirectory() as temp, offline_analyst(), offline_data(with_body=False):
@@ -135,7 +135,7 @@ class AdapterContract(unittest.TestCase):
             self.assertEqual(s.status, 'done', s.message)
             self.assertTrue(s.summary['report_complete'])
             self.assertEqual(s.summary['report_format'], 'selection-report-v1')
-            self.assertIn('依据标题与简介', (s.run_dir / 'report.html').read_text())
+            self.assertIn('依据标题与简介', (s.run_dir / 'report.html').read_text(encoding='utf-8'))
             self.assertFalse(s.snapshot()['can_resume'])
             with self.assertRaises(StopRun):
                 s.resume_analysis()

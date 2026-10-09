@@ -42,7 +42,7 @@ class SelectionReportContract(unittest.TestCase):
         self.assertEqual(summary['report_format'], FORMAT)
         self.assertEqual(summary['pending_count'], 1)
         self.assertEqual(before, (self.store.root / 'requests.jsonl').read_bytes())
-        doc = (self.store.root / 'report.html').read_text()
+        doc = (self.store.root / 'report.html').read_text(encoding='utf-8')
         self.assertIn('账号正常播放量', doc)
         self.assertNotIn('条线索未完成核验', doc)
         self.assertNotIn('待核验', doc)
@@ -140,14 +140,14 @@ class SelectionReportContract(unittest.TestCase):
         self.store.state['results'][extra]['target']=self.store.state['candidates'][extra]
         accept_research(self.store,self.answer);summary=render(self.store)
         self.assertEqual(summary['qualified_count'],1)
-        self.assertNotIn('UNREVIEWED-EXTRA',(self.store.root/'report.html').read_text())
+        self.assertNotIn('UNREVIEWED-EXTRA',(self.store.root/'report.html').read_text(encoding='utf-8'))
         self.assertNotIn('UNREVIEWED-EXTRA',(self.store.root/'results.csv').read_text(encoding='utf-8-sig'))
 
     def test_untrusted_original_metadata_is_escaped(self):
         vid = self.answer['lessons'][0]['cases'][0]['video_id']
         self.store.state['candidates'][vid]['title'] = '<script>alert(1)</script>'
         accept_research(self.store, self.answer); render(self.store)
-        doc = (self.store.root / 'report.html').read_text()
+        doc = (self.store.root / 'report.html').read_text(encoding='utf-8')
         self.assertNotIn('<script>alert(1)</script>', doc)
         self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', doc)
 
@@ -163,7 +163,7 @@ class SelectionReportContract(unittest.TestCase):
         for call in fetcher.call_args_list:
             self.assertNotIn('api_key', call.kwargs)
         self.assertEqual(journal, (self.store.root / 'requests.jsonl').read_bytes())
-        self.assertTrue(all(valid_cached(x) for x in json.loads((self.store.root / 'covers.json').read_text()).values()))
+        self.assertTrue(all(valid_cached(x) for x in json.loads((self.store.root / 'covers.json').read_text(encoding='utf-8')).values()))
         fetcher.reset_mock(); cache_covers(self.store, fetcher); fetcher.assert_not_called()
 
     def test_cover_failure_preserves_readable_report(self):
@@ -174,7 +174,7 @@ class SelectionReportContract(unittest.TestCase):
         cache_covers(self.store, Mock(side_effect=TimeoutError()))
         accept_research(self.store, self.answer)
         self.assertTrue(render(self.store)['report_complete'])
-        doc = (self.store.root / 'report.html').read_text()
+        doc = (self.store.root / 'report.html').read_text(encoding='utf-8')
         self.assertIn('暂无原封面', doc)
         self.assertIn('看原视频', doc)
 

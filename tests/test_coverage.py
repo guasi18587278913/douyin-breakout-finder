@@ -110,7 +110,7 @@ class CoverageContract(unittest.TestCase):
         targets,_,calls,client=self.fixture(1,cached_baselines=True)
         verify(self.store,client);target=targets[0]
         for path in (self.store.root/'cache').glob('*.json'):
-            saved=json.loads(path.read_text())
+            saved=json.loads(path.read_text(encoding='utf-8'))
             if saved['operation']=='stats' and target['id'] in saved['data']['statistics']:
                 saved['data']['statistics'][target['id']]['play_count']=2000
                 path.write_text(json.dumps(saved))

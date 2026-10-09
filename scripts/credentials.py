@@ -3,14 +3,20 @@ import base64
 import ctypes
 import json
 import os
+import re
 import secrets
 import stat
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from core import StopRun
 
 NAME = 'tikhub.json'
 MAX_BYTES = 16384
+LOCK_NAME = '.credential.lock'
+_PATH_LOCKS = {}
+_PATH_LOCKS_GUARD = threading.Lock()
 
 
 class CredentialError(StopRun):
@@ -58,6 +64,8 @@ class CredentialStore:
     def __init__(self, directory, forbidden_roots=()):
         self.root = Path(directory).absolute()
         actual = self.root.resolve()
+        with _PATH_LOCKS_GUARD:
+            self._mutex = _PATH_LOCKS.setdefault(os.path.normcase(str(actual)), threading.RLock())
         self.available = not any(actual == Path(p).resolve() or Path(p).resolve() in actual.parents for p in forbidden_roots)
 
     def exists(self):
@@ -97,6 +105,55 @@ class CredentialStore:
             if handle is not None:
                 os.close(handle)
 
+    @contextmanager
+    def _locked_directory(self, create=False, private=True):
+        # Windows cannot always replace a destination opened by another reader/writer.
+        # A stable advisory-lock file also serializes independent app processes.
+        with self._mutex, self._directory(create=create, private=private) as handle:
+            fd = self._open(LOCK_NAME, os.O_RDWR | os.O_CREAT, handle)
+            acquired = False
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 1:
+                    raise CredentialError('密钥锁文件不安全，请检查私密目录。')
+                if os.name != 'nt' and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
+                    raise CredentialError('密钥锁文件权限不正确，请检查私密目录。')
+                deadline = time.monotonic() + 3
+                while True:
+                    try:
+                        if os.name == 'nt':
+                            import msvcrt
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise CredentialError('密钥文件正在使用，请稍后重试。') from None
+                        time.sleep(0.025)
+                # Windows byte locks may extend beyond EOF. Initialize only after locking.
+                if os.fstat(fd).st_size == 0:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    os.write(fd, b'0')
+                    os.fsync(fd)
+                yield handle
+            finally:
+                if acquired:
+                    try:
+                        if os.name == 'nt':
+                            import msvcrt
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass  # Closing the descriptor also releases the OS lock.
+                os.close(fd)
+
     def _open(self, name, flags, handle, mode=0o600):
         flags |= getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NONBLOCK', 0)
         return os.open(name, flags, mode, dir_fd=handle) if handle is not None else os.open(self.root / name, flags, mode)
@@ -108,11 +165,23 @@ class CredentialStore:
             try: os.unlink(name, dir_fd=handle)
             except FileNotFoundError: pass
 
+    def _cleanup_temporary(self, handle):
+        names = os.listdir(handle) if handle is not None else os.listdir(self.root)
+        for name in names:
+            if not re.fullmatch(r'\.key-[0-9a-f]{24}\.tmp', name):
+                continue
+            info = os.stat(name, dir_fd=handle, follow_symlinks=False) if handle is not None else (self.root / name).lstat()
+            if self._is_link(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise CredentialError('临时密钥文件不安全，请检查私密目录。')
+            if os.name != 'nt' and info.st_uid != os.getuid():
+                raise CredentialError('临时密钥文件属于其他账户，未删除。')
+            self._unlink(name, handle)
+
     def load(self):
         if not self.available:
             return None
         try:
-            with self._directory() as handle:
+            with self._locked_directory() as handle:
                 before = (self.root / NAME).lstat()
                 if self._is_link(before) or not stat.S_ISREG(before.st_mode):
                     raise CredentialError('保存的 Key 文件不安全，请先忘记后重新填写。')
@@ -151,7 +220,7 @@ class CredentialStore:
             else:
                 protection, value = 'owner-file', key
             raw = json.dumps({'version': 1, 'protection': protection, 'value': value}).encode('ascii')
-            with self._directory(create=True) as handle:
+            with self._locked_directory(create=True) as handle:
                 name = '.key-' + secrets.token_hex(12) + '.tmp'
                 try:
                     with os.fdopen(self._open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, handle), 'wb') as stream:
@@ -172,7 +241,8 @@ class CredentialStore:
         if not self.available:
             return
         try:
-            with self._directory(private=False) as handle:
+            with self._locked_directory(private=False) as handle:
+                self._cleanup_temporary(handle)
                 self._unlink(NAME, handle)
                 if handle is not None:
                     os.fsync(handle)

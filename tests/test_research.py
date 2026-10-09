@@ -106,7 +106,7 @@ class ResearchContract(unittest.TestCase):
             self.assertEqual(summary['qualified_count'],0)
             self.assertEqual(summary['reserved_usd_at_configured_prices'],'0.03')
             self.assertEqual(journal,(store.root/'requests.jsonl').read_bytes())
-            self.assertIn('还没走完核验的线索',(store.root/'report.html').read_text())
+            self.assertIn('还没走完核验的线索',(store.root/'report.html').read_text(encoding='utf-8'))
 
 
 class BridgeContract(unittest.TestCase):
@@ -153,7 +153,7 @@ class BridgeContract(unittest.TestCase):
                 session.worker.join(10);thread.join(2)
             self.assertFalse(errors,errors);self.assertEqual(stages,['prepare-research','semantic-review','content-analysis'])
             self.assertEqual(session.status,'done');self.assertTrue(session.summary['report_complete']);self.assertIsNone(session.key)
-            html=(session.run_dir/'report.html').read_text()
+            html=(session.run_dir/'report.html').read_text(encoding='utf-8')
             self.assertIn('自动生成的离线合成报告',html);self.assertIn('把一个具体任务讲清楚',html);self.assertIn('案例解读引用了本轮登记的内容证据',html)
 
     def test_missing_host_stops_before_quote_or_paid_requests(self):

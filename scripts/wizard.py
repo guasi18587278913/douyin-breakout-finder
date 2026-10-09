@@ -455,6 +455,7 @@ def main():
     server = make_server(args.data_dir,args.bridge_dir,assistant_mode=args.assistant)
     url = 'http://127.0.0.1:%s/#%s' % (server.server_port, server.session.token)
     ready = {'url': url, 'pid': os.getpid(), 'data_dir': str(server.session.data_dir), 'bridge_dir':args.bridge_dir,
+             'source_dir': str(ROOT), 'report_format': FORMAT,
              'assistant_mode':server.session.automatic.name if server.session.automatic else 'host'}
     if args.ready_file:
         atomic_json(args.ready_file, ready)

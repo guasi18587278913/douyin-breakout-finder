@@ -75,6 +75,8 @@ try:
   checks.append('offline analysis completion opens the report automatically')
   page.locator('#new-research-link').click()
   page.locator('#description').fill('FDE');page.locator('#start').click();page.locator('#start').click()
+  # This case checks the explicit session-only choice. Persistence has its own suite.
+  if page.locator('#remember-key').is_enabled():page.locator('#remember-key').uncheck()
   page.locator('#key').fill('SYNTHETIC-E2E-KEY-NOT-REAL');page.locator('#save-key').click()
   expect(page.locator('#key-dialog')).to_be_hidden()
   assert 'SYNTHETIC-E2E-KEY-NOT-REAL' not in context.request.get(base+'/api/state').text()
