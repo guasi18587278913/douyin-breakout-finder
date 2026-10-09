@@ -8,17 +8,19 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from analyst import MODES
 
 
 def main():
     p = argparse.ArgumentParser(description='打开本地小号爆款向导。')
     p.add_argument('--no-open', action='store_true')
     p.add_argument('--data-dir')
+    p.add_argument('--assistant', choices=MODES, default='auto', help='自动分析入口；host 为需要宿主持续接单的兼容模式。')
     a = p.parse_args()
     folder = Path(tempfile.mkdtemp(prefix='douyin-wizard-'))
     ready = folder / 'ready.json'
     bridge=folder/'agent'
-    command = [sys.executable, str(Path(__file__).with_name('wizard.py')), '--ready-file', str(ready), '--bridge-dir', str(bridge)]
+    command = [sys.executable, str(Path(__file__).with_name('wizard.py')), '--ready-file', str(ready), '--bridge-dir', str(bridge), '--assistant', a.assistant]
     if a.no_open:
         command.append('--no-open')
     if a.data_dir:

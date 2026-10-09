@@ -4,7 +4,7 @@ function $(id) { const el=document.getElementById(id); if(!el) throw new Error('
 /** @param {string} id */
 function input(id) { const el=$(id); if(!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) throw new Error('输入项缺失'); return el; }
 /** @typedef {{topic:string, keywords:string[], anchors:string[]}} Brief */
-/** @typedef {{status:string,message:string,mode:string,key_ready:boolean,answers:Brief,summary:{demo:boolean,candidate_count:number,qualified_count:number,limited_count:number,pending_count:number,review_pending_count:number,report_complete:boolean,research_status:string,generated_at:string},report_url:string,output_dir:string}} Snapshot */
+/** @typedef {{status:string,message:string,mode:string,key_ready:boolean,assistant_mode:string,assistant_label:string,can_resume:boolean,answers:Brief,summary:{demo:boolean,candidate_count:number,qualified_count:number,limited_count:number,pending_count:number,review_pending_count:number,report_complete:boolean,research_status:string,generated_at:string},report_url:string,output_dir:string}} Snapshot */
 /** @type {Partial<Snapshot>} */ let state={};
 let lastReportStamp='';
 let refined=false, selectedFocus='all', pendingStart=false;
@@ -22,6 +22,7 @@ async function api(path,body){
 function updateConnection(){
   $('connection-label').textContent=state.key_ready ? 'Key 已就绪' : '连接 TikHub';
   $('connect').classList.toggle('ready',Boolean(state.key_ready));
+  $('analysis-note').textContent=state.assistant_mode==='host'?'报告由当前智能体分析，请保持助手运行。':'报告自动使用'+(state.assistant_label||'本机智能体')+'的登录与额度；无需回到聊天。';
 }
 /** @param {boolean} pending */
 function openKey(pending){
@@ -36,7 +37,7 @@ function researchView(){
   $('workspace').hidden=true;$('research').hidden=false;$('loading').hidden=false;
   $('research-label').textContent='RESEARCH IN PROGRESS';$('result-title').textContent='正在寻找，值得复看的内容。';
   $('progress').textContent='正在连接 TikHub，准备本轮研究…';
-  $('result-actions').hidden=true;$('result-metrics').hidden=true;$('demo-banner').hidden=true;$('retry').hidden=true;
+  $('result-actions').hidden=true;$('result-metrics').hidden=true;$('demo-banner').hidden=true;$('retry').hidden=true;$('resume-analysis').hidden=true;
   $('highlights').replaceChildren();$('new-research').hidden=true;$('saved').textContent='';$('result-note').textContent='';
   window.scrollTo(0,0);
 }
@@ -69,18 +70,19 @@ async function poll(){
     if(state.status==='running'){timer=window.setTimeout(poll,1200);return;}
     $('loading').hidden=true;$('research-label').textContent=state.status==='error'?'RESEARCH PAUSED':state.status==='needs_analysis'?'ANALYSIS INCOMPLETE':'RESEARCH COMPLETE';
     const summary=state.summary;
+    $('resume-analysis').hidden=!state.can_resume;
+    $('new-research').hidden=false;$('retry').hidden=Boolean(state.can_resume)||!(state.status==='error'||(state.status==='needs_analysis'&&!summary));
     if(state.status==='needs_analysis'){timer=window.setTimeout(poll,3000);}
     if(summary && summary.generated_at===lastReportStamp)return;
     lastReportStamp=summary?.generated_at || '';
     $('result-title').textContent=state.status==='error'?'这次查询没有完成。':state.status==='needs_analysis'?'研究还没完成，现有证据已保留。':summary?.qualified_count?'有这些内容，值得你复看。':'研究已结束，先看看现有证据。';
-    $('new-research').hidden=false;$('retry').hidden=state.status!=='error';
     if(summary && state.report_url){
       $('result-metrics').replaceChildren(metric(summary.candidate_count,'发现候选'),metric(summary.qualified_count,'播放核验达标'),metric(summary.pending_count+summary.review_pending_count,'待进一步核验'));
       $('result-metrics').hidden=false;$('demo-banner').hidden=!summary.demo;$('result-actions').hidden=false;
       /** @type {HTMLAnchorElement} */ ($('report-link')).href=state.report_url;
       $('saved').textContent='已保存到本机：'+state.output_dir;
       $('report-link-label').textContent=summary.report_complete?'打开完整研究报告':'查看阶段报告';
-      $('result-note').textContent=summary.report_complete?'报告包含主题发现、逐条案例与对照证据；仍请复看原视频。':'还需要智能体完成分析或补充证据。请回到启动 Skill 的会话，说“继续完成小号爆款研究”。';
+      $('result-note').textContent=summary.report_complete?'报告包含主题发现、逐条案例与对照证据；仍请复看原视频。':state.assistant_mode==='host'?'阶段报告已保存，等待宿主助手补充分析或证据。':state.can_resume?'分析中断，现有结果已保存。点击“继续生成报告”会复用已有数据，不再次查询 TikHub；分析仍使用当前智能体额度。':'已完成现有材料的分析。报告中标明了尚缺的正文证据或数据，重复生成不能补齐这些材料。';
       $('highlights').replaceChildren();
       const response=await fetch('/report/results.json');if(response.ok)highlights(await response.json());
     }
@@ -124,6 +126,9 @@ $('demo').onclick=()=>action($('demo'),async()=>{
   try{state=await api('/api/start',{description:'FDE'});await poll();}catch(e){mainView();error(message(e));}
 });
 $('new-research').onclick=mainView;$('retry').onclick=()=>{mainView();openKey(false);};
+$('resume-analysis').onclick=()=>action($('resume-analysis'),async()=>{
+  state=await api('/api/resume-analysis',{});researchView();await poll();
+});
 $('quit').onclick=()=>action($('quit'),async()=>{const response=await api('/api/quit',{});clearTimeout(timer);document.getElementsByTagName('main')[0].textContent=response.message;});
 (async()=>{
   try{

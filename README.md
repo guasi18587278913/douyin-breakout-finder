@@ -2,7 +2,7 @@
 
 **把方向说清楚，找到值得复看的小号内容。** 一个可以从 GitHub 安装的 Skill，附本地向导、简短方向引导和可复算报告。
 
-> v0.2.0 公测版。统计由程序计算，完整报告由启动 Skill 的宿主智能体阅读证据后撰写，不需要新增分析 API Key。真实 TikHub 查询需要你自己的 Key 和已确认预算；免费示例全是合成数据。当前不会承诺每个模型和客户端都已实测。
+> v0.2.0 公测版。统计由程序计算，报告由本机智能体的自动执行器或宿主阅读现有证据后撰写，不需要新增分析 API Key。真实 TikHub 查询需要你自己的 Key 和已确认预算；免费示例全是合成数据。当前不会承诺每个模型和客户端都已实测。
 
 ## 发给智能体，这一句就够了
 
@@ -14,7 +14,7 @@
 
 1. **准备 Key。** 打开 [TikHub 后台](https://user.tikhub.io/)，注册或登录账号，在 API Key 管理中创建并复制自己的 Key。后台名称可能随版本变化，找不到时查 [官方文档](https://docs.tikhub.io/)。需要正式查询时，在 TikHub 自行选择充值金额。**不需要 GitHub Key。**
 2. **说出想找什么。** 用一句话描述内容方向，选一个想参考的类型，点击“生成报告”。Key 在小弹窗里填写，价格和研究参数由程序处理。
-3. **打开报告。** 智能体继续复核、阅读内容与写作。报告包含主题发现、分类、逐条拆解、选题建议和对照证据。不要在只打开网页时结束智能体会话；未完成分析或证据不足时，只显示阶段稿。Key 在本轮结束后清除。
+3. **打开报告。** 后台自动调用本机智能体进行复核与写作，进度和报告都在当前网页显示。分析中断可在网页继续，复用已有数据。未完成分析或证据不足时，只显示阶段稿；缺少正文不会编造拆解。Key 在本轮结束后清除。
 
 不想先付费？点击“先体验免费示例”，一分钟走完固定 FDE 合成数据流程。它不代表你的主题已有真实调研结果。
 
@@ -32,19 +32,22 @@ python3 install.py --client codex
 向导启动方式（切到安装器返回的 `installed` 目录）：
 
 ```sh
-python3 scripts/start.py
+python3 scripts/start.py --assistant auto
+# 当前客户端已知时：--assistant codex / claude / workbuddy
 ```
 
-启动后必须按 [宿主研究协议](references/agent-workflow.md) 使用返回的 `bridge_dir`，持续等待、分析与提交，直到 `finished`。只是打开网页然后结束回复，无法完成完整报告；程序会在收费查询前检查助手是否接入。
+自动模式通过本机已安装并登录的 CLI 按需启动分析，不依赖原聊天仍在运行。启动助手应指定自己的客户端；`auto` 优先识别启动环境与安装来源，无法确定时提示指定入口，不静默换用另一个账户。分析会使用所选客户端的账户额度，和 TikHub 的 US$0.50 数据预留上限分开。Codex 自动模式使用 ChatGPT 登录；Claude Code 使用订阅登录；不接受环境里的分析 API Key。
+
+只有宿主能运行 Skill、没有独立 CLI 时，使用 `--assistant host`，由启动助手按 [宿主研究协议](references/agent-workflow.md) 持续接单直到完成。该兼容模式仍要求宿主保持运行，不能承诺聊天结束后网页也能独立分析。
 
 Windows 用 `python` 代替 `python3`。如果没有自动弹窗，把输出的 `url` 交给用户打开。页面只有当前电脑可访问；不要放到公网，也不要公开会话链接。
 
 | 客户端 | 安装方式 | 本版边界 |
 | --- | --- | --- |
-| Codex | `--client codex` → `~/.agents/skills/` | 遵循官方技能目录；安装与脚本已有本机测试；远程验收尚待完成，真实客户端会话另见测试记录 |
-| Claude Code | `--client claude` → `~/.claude/skills/` | 遵循官方技能目录；同上 |
-| DeepSeek Harness（DSH） | `--client dsh` → `$DSH_HOME/skills` 或 `~/.dsh/skills/` | 遵循官方文件系统技能加载文档；未声称实际模型推理通过 |
-| WorkBuddy | `--client workbuddy` → 通用 `~/.agents/skills/` | 需在客户端技能管理里添加/导入；自动发现取决于版本，尚未做真实客户端实测 |
+| Codex | `--client codex` → `~/.agents/skills/` | 自动模式调用已登录的 `codex exec`；需支持临时会话、结构化输出和忽略用户配置参数 |
+| Claude Code | `--client claude` → `~/.claude/skills/` | 自动模式调用 `claude -p`；不要求安装 Codex，需已登录订阅账户 |
+| DeepSeek Harness（DSH） | `--client dsh` → `$DSH_HOME/skills` 或 `~/.dsh/skills/` | 目前走 `--assistant host` 持续接单模式 |
+| WorkBuddy | `--client workbuddy` → 通用 `~/.agents/skills/` | 有已登录的 `codebuddy` CLI 时使用自动模式；仅桌面端安装不保证存在 CLI，可用 host 模式 |
 | 其他本地 Agent | `--client agents` 或 `--target /技能目录/douyin-breakout-finder` | 需要支持 SKILL.md 和 Python 执行 |
 | 纯网页聊天 | 无法运行本地版本 | 仅把链接发进不支持执行代码的聊天工具不会完成安装 |
 
@@ -92,3 +95,12 @@ npx --yes --package typescript@5.7.3 tsc -p tsconfig.json
 ```
 
 浏览器验收由 Playwright 执行；只在测试环境安装它，使用者运行 Skill 不需要安装。完整研究方法见 [method.md](references/method.md)。
+
+自动分析协议与浏览器回归（合成执行器，零真实模型/数据请求）：
+
+```sh
+python3 -m unittest discover -s tests -p test_analyst.py -v
+python3 tests/browser_auto.py --out artifacts/auto-acceptance
+```
+
+自动执行器当前只分析已登记材料，不自动下载或转录视频。缺少正文时保留标题级阶段稿；可通过宿主协议补充证据。CLI 适配的离线测试通过不代表已验证每种操作系统、订阅账户和真实模型，详见测试记录。

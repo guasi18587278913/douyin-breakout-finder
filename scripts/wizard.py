@@ -13,10 +13,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from core import Store, StopRun, atomic_json, now, read_json
 from bridge import FileBridge, AssistanceNeeded
+from analyst import LocalAnalyst, MODES
 from research import review_packet, accept_review, analysis_packet, accept_research, report_state
 from product import intake, config_for, review_by_rules, evidence_notes, fetch_prices, simple_brief
 from tikhub import TikHubClient
-from workflow import search, verify, write_inbox
+from workflow import search, verify, write_inbox, CachedClient
 from report import render
 from demo import run_demo
 
@@ -27,7 +28,7 @@ EXPORTS = {'report.html': 'text/html; charset=utf-8', 'results.csv': 'text/csv; 
 
 
 class Session:
-    def __init__(self, data_dir, bridge_dir=None, bridge_timeout=600):
+    def __init__(self, data_dir, bridge_dir=None, bridge_timeout=600, assistant_mode='host'):
         self.data_dir = Path(data_dir).resolve()
         self.token = secrets.token_urlsafe(32)
         self.key = None
@@ -43,6 +44,18 @@ class Session:
         self.cancelled = threading.Event()
         self.worker = None
         self.bridge = FileBridge(bridge_dir,self.cancelled,bridge_timeout) if bridge_dir else None
+        self.automatic = LocalAnalyst(self.cancelled, assistant_mode, bridge_timeout, ROOT) if assistant_mode != 'host' else None
+        self.assistant = None
+        self.analysis_interrupted = False
+
+    def select_assistant(self):
+        if self.automatic:
+            if not self.automatic.available():
+                raise StopRun(self.automatic.unavailable_message())
+            return self.automatic
+        if not self.bridge or not self.bridge.available():
+            raise StopRun('当前是宿主兼容模式，分析助手尚未接入。请使用自动分析模式启动，或让宿主助手持续接单；未接入前不会查询付费数据。')
+        return self.bridge
 
     def snapshot(self):
         with self.lock:
@@ -59,21 +72,24 @@ class Session:
                 except (StopRun,OSError,ValueError):
                     pass
             return dict(status=self.status, message=self.message, mode=self.mode,
-                        key_ready=bool(self.key), assistant_connected=bool(self.bridge and self.bridge.available()), pricing=self.pricing, answers=self.answers,
+                        key_ready=bool(self.key), assistant_connected=bool(self.automatic.available() if self.automatic else self.bridge and self.bridge.available()),
+                        assistant_mode=self.automatic.name if self.automatic else 'host',
+                        assistant_label=self.automatic.label if self.automatic else '当前智能体',
+                        can_resume=bool(self.automatic and self.analysis_interrupted and self.mode=='live' and self.run_dir and self.summary and self.status in ('needs_analysis','error')),
+                        pricing=self.pricing, answers=self.answers,
                         summary=self.summary, report_url='/report/report.html' if self.summary else None,
                         output_dir=str(self.run_dir) if self.run_dir else None, version='0.2.0')
 
     def start(self, data):
         with self.lock:
-            if self.status == 'running':
+            if self.status == 'running' or (self.worker and self.worker.is_alive()):
                 raise StopRun('已有任务正在运行，请等待本轮结束。')
             answers = simple_brief(data) if data.get('description') else intake(data)
             config = None
             if self.mode == 'live':
                 if not self.key:
                     raise StopRun('请先填入本次会话的 TikHub Key。')
-                if not self.bridge or not self.bridge.available():
-                    raise StopRun('分析助手尚未接入。请回到启动 Skill 的智能体会话，说“继续完成小号爆款研究”；接入前不会发起收费查询。')
+                self.assistant = self.select_assistant()
                 if data.get('consent') is not True:
                     raise StopRun('请确认本轮美元预算后再开始。')
                 if not self.pricing:
@@ -88,14 +104,28 @@ class Session:
             self.answers = answers
             self.run_dir = self.data_dir / ('run-' + time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(4))
             self.summary = None
-            if self.bridge: atomic_json(self.bridge.folder/'status.json',{'terminal':False})
+            self.analysis_interrupted = False
+            if self.bridge and not self.automatic: atomic_json(self.bridge.folder/'status.json',{'terminal':False})
             self.cancelled.clear()
             self.status, self.message = 'running', '正在准备本轮研究…'
             thread = threading.Thread(target=self.run, args=(config,), daemon=True)
             self.worker = thread
             thread.start()
 
-    def run(self, config):
+    def resume_analysis(self):
+        with self.lock:
+            if self.status == 'running' or (self.worker and self.worker.is_alive()):
+                raise StopRun('已有任务正在运行，请等待本轮结束。')
+            if not self.automatic or not self.analysis_interrupted or self.mode != 'live' or not self.run_dir or not self.summary or self.status not in ('needs_analysis', 'error'):
+                raise StopRun('当前没有可继续的分析任务。')
+            self.assistant = self.select_assistant()
+            self.cancelled.clear()
+            self.analysis_interrupted = False
+            self.status, self.message = 'running', '正在接续分析，复用已有数据，不重新查询 TikHub…'
+            self.worker = threading.Thread(target=self.run, args=(None, True), daemon=True)
+            self.worker.start()
+
+    def run(self, config, resume=False):
         store = None
         try:
             if self.mode == 'demo':
@@ -103,24 +133,40 @@ class Session:
                 store, _ = run_demo(self.run_dir)
                 summary = render(store)
             else:
-                self.message = '正在确认智能体已经接入本轮研究…'
+                if resume:
+                    store = Store(self.run_dir)
+                    config = store.config
+                self.message = '正在启动自动分析程序…' if self.automatic else '正在确认智能体已经接入本轮研究…'
                 def ready(answer):
                     if not isinstance(answer,dict) or answer.get('ready') is not True:
                         raise StopRun('智能体需确认已接入当前研究。')
                     return True
-                self.bridge.ask('prepare-research',{'run_dir':str(self.run_dir),'topic':config['topic'],'budget_usd':config['budget_usd'],'max_requests':config['max_requests']},ready)
-                store = Store.create(self.run_dir, config)
+                self.assistant.ask('prepare-research',{'run_dir':str(self.run_dir),'topic':config['topic'],'budget_usd':config['budget_usd'],'max_requests':config['max_requests']},ready)
+                if not resume:
+                    store = Store.create(self.run_dir, config)
                 with store.lock():
-                    client = TikHubClient(store, allow_paid=True, api_key=self.key)
-                    client = CancellableClient(client, self.cancelled)
-                    self.message = '正在搜索本轮候选…'
-                    search(store, client, page_limit=1)
-                    review_by_rules(store, self.answers)
-                    write_inbox(store)
-                    self.summary = render(store)
-                    for round_number in range(3):
+                    if resume:
+                        client = CachedClient(store)
+                    else:
+                        client = CancellableClient(TikHubClient(store, allow_paid=True, api_key=self.key), self.cancelled)
+                        self.message = '正在搜索本轮候选…'
+                        search(store, client, page_limit=1)
+                        review_by_rules(store, self.answers)
+                        write_inbox(store)
+                        self.summary = render(store)
+                    pending = any(v['review']['decision'] in ('pending','unsure') or v['review'].get('method')=='keyword-rule'
+                                  for v in store.state['candidates'].values())
+                    rounds = [2] if resume and pending else [] if resume else range(3)
+                    for round_number in rounds:
                         self.message = '智能体正在复核内容相关性，并判断是否需要补搜…'
-                        response=self.bridge.ask('semantic-review',review_packet(store,round_number),lambda answer:accept_review(store,answer))
+                        packet = review_packet(store,round_number)
+                        if resume:
+                            packet['remaining_requests'] = 0
+                        def accept(answer):
+                            if resume and isinstance(answer,dict) and answer.get('next_keywords'):
+                                raise StopRun('接续分析只使用已有数据，不能补搜。')
+                            return accept_review(store,answer)
+                        response=self.assistant.ask('semantic-review',packet,accept)
                         if not response['next_keywords'] or round_number==2:break
                         self.message = '按智能体的研究判断补充候选，仍使用本轮原有额度…'
                         search(store,client,response['next_keywords'],response['search_reason'],page_limit=1)
@@ -133,7 +179,7 @@ class Session:
                     write_inbox(store)
                     self.summary=render(store)
                     self.message = '智能体正在阅读内容证据、整理主题发现和逐条案例…'
-                    self.bridge.ask('content-analysis',analysis_packet(store),lambda answer:accept_research(store,answer))
+                    self.assistant.ask('content-analysis',analysis_packet(store),lambda answer:accept_research(store,answer))
                     summary = render(store)
             with self.lock:
                 self.summary = summary
@@ -146,17 +192,19 @@ class Session:
                 message = message.replace(self.key, '[REDACTED]')
             if store:
                 try:
-                    store.state['stops'].append({'at': now(), 'phase': 'wizard', 'message': message})
-                    store.save()
-                    write_inbox(store)
-                    self.summary = render(store)
+                    with store.lock():
+                        store.state['stops'].append({'at': now(), 'phase': 'wizard', 'message': message})
+                        store.save()
+                        write_inbox(store)
+                        self.summary = render(store)
                 except Exception:
                     pass
             with self.lock:
+                self.analysis_interrupted = True
                 self.status, self.message = ('needs_analysis' if isinstance(error,AssistanceNeeded) else 'error'), message
         finally:
             self.key = None
-            if self.bridge:
+            if self.bridge and not self.automatic:
                 atomic_json(self.bridge.folder/'status.json',{'terminal':True,'at':time.time(),'request_id':self.bridge.last_request_id,'status':self.status,'run_dir':str(self.run_dir),'message':self.message})
 
 
@@ -289,6 +337,8 @@ class Handler(BaseHTTPRequestHandler):
                     Store.pricing_ready(type('PriceCheck', (), {'config': check})(), ['search', 'posts', 'stats', 'comments'])
                 elif path == '/api/start':
                     self.session.start(data)
+                elif path == '/api/resume-analysis':
+                    self.session.resume_analysis()
                 else:
                     self.reply(404, {'error': '未知操作。'})
                     return
@@ -312,10 +362,10 @@ class CancellableClient:
         return self.client.call(*args, **kwargs)
 
 
-def make_server(data_dir, bridge_dir=None, bridge_timeout=600):
+def make_server(data_dir, bridge_dir=None, bridge_timeout=600, assistant_mode='auto'):
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
-    server.session = Session(data_dir,bridge_dir,bridge_timeout)
+    server.session = Session(data_dir,bridge_dir,bridge_timeout,assistant_mode)
     return server
 
 
@@ -325,12 +375,14 @@ def main():
     parser.add_argument('--ready-file')
     parser.add_argument('--bridge-dir')
     parser.add_argument('--no-open', action='store_true')
+    parser.add_argument('--assistant', choices=MODES, default='auto')
     args = parser.parse_args()
     if os.name != 'nt':
         os.umask(0o077)
-    server = make_server(args.data_dir,args.bridge_dir)
+    server = make_server(args.data_dir,args.bridge_dir,assistant_mode=args.assistant)
     url = 'http://127.0.0.1:%s/#%s' % (server.server_port, server.session.token)
-    ready = {'url': url, 'pid': os.getpid(), 'data_dir': str(server.session.data_dir), 'bridge_dir':args.bridge_dir}
+    ready = {'url': url, 'pid': os.getpid(), 'data_dir': str(server.session.data_dir), 'bridge_dir':args.bridge_dir,
+             'assistant_mode':server.session.automatic.name if server.session.automatic else 'host'}
     if args.ready_file:
         atomic_json(args.ready_file, ready)
     print(json.dumps(ready, ensure_ascii=False), flush=True)

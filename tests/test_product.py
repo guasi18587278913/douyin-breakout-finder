@@ -178,9 +178,11 @@ class TestInstaller(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder)/'skills'/installer.NAME
             data = Path(folder)/'data'; data.mkdir(); (data/'keep.txt').write_text('my data')
-            first = installer.install(ROOT, target)
+            first = installer.install(ROOT, target, client='workbuddy')
             self.assertIsNone(first['backup'])
+            self.assertEqual(read_json(target/'.installation.json')['client'], 'workbuddy')
             second = installer.install(ROOT, target, backup_root=Path(folder)/'backups')
+            self.assertEqual(read_json(target/'.installation.json')['client'], 'workbuddy')
             self.assertTrue(Path(second['backup']).is_dir())
             self.assertNotEqual(Path(second['backup']).parent, target.parent)
             self.assertEqual((data/'keep.txt').read_text(),'my data')

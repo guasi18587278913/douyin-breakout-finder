@@ -102,7 +102,7 @@ def hashes(folder):
     return result
 
 
-def install(source, target, ref=None, backup_root=None):
+def install(source, target, ref=None, backup_root=None, client=None):
     source, target = source.resolve(), target.absolute()
     if target.is_symlink():
         raise ValueError('目标是软链接，未覆盖。请选择新目录。')
@@ -129,7 +129,8 @@ def install(source, target, ref=None, backup_root=None):
             out = stage / relative
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source / relative, out)
-        marker = dict(repository=REPO, version=meta['version'], ref=ref, files=hashes(stage))
+        marker = dict(repository=REPO, version=meta['version'], ref=ref, files=hashes(stage),
+                      client=client or (old.get('client') if target.exists() else None))
         (stage / '.installation.json').write_text(json.dumps(marker, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         if target.exists():
             backup_root = Path(backup_root) if backup_root else Path.home() / '.local' / 'share' / NAME / 'installation-backups'
@@ -177,9 +178,9 @@ def main():
             with tempfile.TemporaryDirectory(prefix=NAME + '-download-') as temp:
                 source = Path(temp)
                 download(ref, source)
-                result = install(source, target, ref)
+                result = install(source, target, ref, client=args.client)
         else:
-            result = install(Path(args.source), target, args.ref)
+            result = install(Path(args.source), target, args.ref, client=args.client)
         if args.client == 'workbuddy':
             result['note'] = '文件已写入通用目录；请在 WorkBuddy 技能管理中添加或导入该目录。实际加载取决于客户端版本，尚未做客户端实测。'
         print(json.dumps(result, ensure_ascii=False, indent=2))

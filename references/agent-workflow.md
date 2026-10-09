@@ -1,10 +1,12 @@
 # 宿主智能体持续研究协议
 
+本协议只用于 `--assistant host` 兼容模式。自动模式（codex / claude / workbuddy）由后台直接调度本机 CLI，不需要此交接循环，也不要同时另起一个宿主来提交同一轮分析。
+
 网页负责 Key 与取数，宿主负责理解和分析。**打开网页不是完成任务**。不要只输出启动链接就结束会话。
 
 ## 启动与等待
 
-`python3 scripts/start.py` 返回 `url` 和 `bridge_dir`。把 URL 交给使用者，然后立即进入以下循环：
+`python3 scripts/start.py --assistant host` 返回 `url` 和 `bridge_dir`。把 URL 交给使用者，然后立即进入以下循环：
 
 ```sh
 python3 scripts/assist.py next --bridge '<bridge_dir>' --wait 50
