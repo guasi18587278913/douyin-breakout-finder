@@ -19,15 +19,19 @@ async function api(path,body){
   const response=await fetch(path,options);const result=await response.json();
   if(!response.ok)throw new Error(result.error || '连接未完成，请重试。');return result;
 }
+function updateStartNotice(){ $('start-cost-note').hidden=!(refined && state.key_ready); }
 function updateConnection(){
+  updateStartNotice();
   $('connection-label').textContent=state.key_ready ? 'Key 已就绪' : '连接 TikHub';
   $('connect').classList.toggle('ready',Boolean(state.key_ready));
   $('analysis-note').textContent=state.assistant_mode==='host'?'报告由当前智能体分析，请保持助手运行。':'报告自动使用'+(state.assistant_label||'本机智能体')+'的登录与额度；无需回到聊天。';
 }
 /** @param {boolean} pending */
 function openKey(pending){
-  pendingStart=pending;error('','key-error');$('key-action').textContent=pending?'连接并生成报告':'连接';
-  /** @type {HTMLDialogElement} */ ($('key-dialog')).showModal();input('key').focus();
+  pendingStart=pending;error('','key-error');$('key-action').textContent=pending?'连接并开始查询':'使用此密钥';
+  $('key-submit-note').textContent=pending?'开始查询后，将从你的 TikHub 余额中按实际用量扣费。':'这一步只在本机暂存密钥，不会扣费；生成报告时才开始查询。';
+  /** @type {HTMLDialogElement} */ ($('key-dialog')).showModal();
+  $('key-title').focus({preventScroll:true});$('key-dialog').scrollTop=0;
 }
 function mainView(){
   clearTimeout(timer);$('workspace').hidden=false;$('research').hidden=true;error('');window.scrollTo(0,0);
@@ -99,11 +103,11 @@ $('start').onclick=()=>action($('start'),async()=>{
   if(!refined){
     state=await api('/api/brief',{description:input('description').value,focus:selectedFocus});
     $('brief-title').textContent='我会从「'+state.answers.topic+'」开始。你更想参考哪一类？';
-    $('refinement').hidden=false;$('start-label').textContent='生成报告';refined=true;return;
+    $('refinement').hidden=false;$('start-label').textContent='生成报告';refined=true;updateStartNotice();return;
   }
   if(!state.key_ready){openKey(true);return;}await begin();
 });
-input('description').oninput=()=>{refined=false;$('refinement').hidden=true;$('start-label').textContent='帮我找爆款';error('');};
+input('description').oninput=()=>{refined=false;$('refinement').hidden=true;$('start-label').textContent='帮我找爆款';updateStartNotice();error('');};
 document.querySelectorAll('[data-example]').forEach(button=>{
   if(!(button instanceof HTMLButtonElement))return;
   button.onclick=()=>{input('description').value=button.dataset.example;input('description').dispatchEvent(new Event('input'));input('description').focus();};
