@@ -18,6 +18,12 @@ OPS = ('search', 'posts', 'stats', 'comments')
 class StopRun(Exception):
     """An expected, actionable stop; do not automatically retry."""
 
+class ValidationIssue(StopRun):
+    """Only locally authored rule messages may be returned to an analysis model."""
+    def __init__(self, path, rule):
+        super().__init__(rule)
+        self.feedback = {'path': path, 'rule': rule}
+
 class BudgetStop(StopRun):
     pass
 

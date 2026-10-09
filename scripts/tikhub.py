@@ -237,6 +237,8 @@ class TikHubClient:
                 future = Future()
                 self._flights[flight_key] = future
         if not owner:
+            with self._gate:
+                self.store.cache_hits = getattr(self.store, 'cache_hits', 0) + 1
             return future.result()
         try:
             result = self._call_once(op, params, key, refresh)
@@ -263,6 +265,7 @@ class TikHubClient:
                 raise StopRun('用户已结束会话，不再发送新的查询。')
             cached = read_json(path)
             if cached is not None and not refresh:
+                self.store.cache_hits = getattr(self.store, 'cache_hits', 0) + 1
                 return cached['data']
             if refresh and not self.retry_failed:
                 raise StopRun('Refreshing an incomplete response requires --retry-failed.')

@@ -207,6 +207,9 @@ def apply_review(store, reviews):
             raise StopRun('Unknown review method')
         checked[vid] = {'decision': r['decision'], 'reason': r.get('reason', '')[:2000], 'priority': priority, 'method': method}
     for vid, review in checked.items():
+        if review['method'] == 'human-or-agent':
+            from research import review_fingerprint
+            review['input_hash'] = review_fingerprint(store, vid)
         store.state['candidates'][vid]['review'] = review
         if vid in store.state['results']:
             store.state['results'][vid]['target']['review']=review
@@ -357,6 +360,8 @@ def verification_fingerprint(store, target, result):
     """Keep an immutable identity/statistics snapshot; result.target can alias candidates."""
     ids = [target['id']] + [v['id'] for v in result.get('baseline', [])]
     return digest({'target': {k: target.get(k) for k in ('id', 'author_id', 'followers', 'published_at', 'is_top')},
+                   'criteria': {k: store.config.get(k) for k in ('max_followers', 'min_ratio', 'baseline_count',
+                                'min_baseline_count', 'comparison_window_days', 'min_age_days')},
                    'statistics': {vid: store.state['stats'].get(vid) for vid in ids}})
 
 
@@ -458,6 +463,8 @@ def verify(store, client, channel='normal'):
                                          'ratio': None, 'limited_sample': True}
             record_stop(store, 'verify', e)
         store.save()
+        if hasattr(store, 'on_verified'):
+            store.on_verified()
     store.save()
     atomic_json(store.root / 'keyword-quality.json', keyword_quality(store))
 

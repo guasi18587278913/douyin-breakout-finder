@@ -84,7 +84,9 @@ class ResearchContract(unittest.TestCase):
 
     def test_all_candidates_must_be_accounted_for(self):
         with tempfile.TemporaryDirectory() as temp:
-            store,_=run_demo(Path(temp)/'demo');before=copy.deepcopy(store.state['candidates'])
+            store,_=run_demo(Path(temp)/'demo')
+            next(iter(store.state['candidates'].values()))['review']['decision']='pending'
+            before=copy.deepcopy(store.state['candidates'])
             with self.assertRaises(StopRun):accept_review(store,{'reviews':{},'next_keywords':[]})
             self.assertEqual(before,store.state['candidates'])
 
@@ -151,7 +153,7 @@ class BridgeContract(unittest.TestCase):
             with patch('wizard.fetch_prices',return_value=quote),patch('wizard.TikHubClient',side_effect=fake_client):
                 session.start({'description':'FDE','consent':True})
                 session.worker.join(10);thread.join(2)
-            self.assertFalse(errors,errors);self.assertEqual(stages,['prepare-research','semantic-review','content-analysis'])
+            self.assertFalse(errors,errors);self.assertEqual(stages,['prepare-research','semantic-review','content-analysis','semantic-review','content-analysis'])
             self.assertEqual(session.status,'done');self.assertTrue(session.summary['report_complete']);self.assertIsNone(session.key)
             html=(session.run_dir/'report.html').read_text(encoding='utf-8')
             self.assertIn('自动生成的离线合成报告',html);self.assertIn('把一个具体任务讲清楚',html);self.assertIn('案例解读引用了本轮登记的内容证据',html)

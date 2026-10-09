@@ -48,6 +48,7 @@ Windows 用 `python` 代替 `python3`。如果没有自动弹窗，把输出的 
 - [交付标准](references/report-standard.md)：口吻、精选案例、图卡字段、证据与完成判定。
 - [标准样稿](references/report-example.json)：方法讲述、案例解释、跨场景例子与行动建议。
 - [生成流程](docs/report-flow.md)：从用户输入到校验与图文报告的各环节。
+- [交付验收](docs/delivery-verification.md)：核对实际安装与运行入口，防止只更新源码副本。
 
 后台会实际读取标准和样稿，输出 `selection-report-v1`，再由程序统一计算与排版。标题、简介及已核验数据可支持选题分析；涉及口播和镜头的陈述必须有正文证据。其余合格作品放在更多小号爆款；待核验线索和内部诊断只保留在本地记录，不对用户展示。
 

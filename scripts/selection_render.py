@@ -121,5 +121,6 @@ def render_selection(store, story):
     title_only = any(c['basis'] == 'title-description' for c in story['cases'].values())
     basis = '本轮没有足够的合格案例用于解读。' if not story['cases'] else '本报告包含依据标题与简介的选题解读。' if title_only else '案例解读引用了本轮登记的内容证据。'
     out += '<details class="selection-notes"><summary>数据来源与解读依据</summary><p>数据采集于 '+E(collected)+'（北京时间）。'+basis+'你可以结合自己的内容尝试，实际表现还需要验证。</p><ul>'
+    out += ''.join('<li>'+E(note)+'</li>' for note in story['limitations'])
     out += '</ul></details></section>'
     return out

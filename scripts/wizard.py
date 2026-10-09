@@ -15,7 +15,7 @@ from core import Store, StopRun, atomic_json, now, read_json
 from credentials import CredentialStore, CredentialError, validate_key
 from bridge import FileBridge, AssistanceNeeded
 from analyst import LocalAnalyst, MODES
-from research import review_packet, accept_review, analysis_packet, accept_research, report_state
+from research import review_packet, accept_review, analysis_packet, accept_research, report_state, pending_reviews, review_fingerprint
 from selection_report import FORMAT
 from cover_cache import cache_covers
 from product import intake, config_for, review_by_rules, evidence_notes, fetch_prices, simple_brief
@@ -23,11 +23,17 @@ from tikhub import TikHubClient
 from workflow import search, verify, write_inbox, CachedClient, search_extensions, MAX_SEARCH_ROUNDS
 from report import render
 from demo import run_demo
+from provenance import source_identity
+from verification import audit_run
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPORTS = {'report.html': 'text/html; charset=utf-8', 'results.csv': 'text/csv; charset=utf-8',
            'comparisons.csv': 'text/csv; charset=utf-8', 'results.json': 'application/json',
            'summary.json': 'application/json', 'candidates.json': 'application/json'}
+
+
+class ReviewChanged(Exception):
+    """Restart semantic validation if a host adds evidence while writing."""
 
 
 class Session:
@@ -59,6 +65,11 @@ class Session:
         self.automatic = LocalAnalyst(self.cancelled, assistant_mode, bridge_timeout, ROOT) if assistant_mode != 'host' else None
         self.assistant = None
         self.analysis_interrupted = False
+        self.source_at_start = source_identity(ROOT)
+        self.usable_results = []
+        self.run_started = None
+        self.first_result_seconds = None
+        self.active_store = None
 
     def select_assistant(self):
         if self.automatic:
@@ -78,12 +89,30 @@ class Session:
                         stored=Store(self.run_dir)
                         readiness=report_state(stored)
                         if refreshed.get('research_status')==readiness['status']:
+                            if refreshed.get('report_format') == FORMAT and readiness['status'] == 'complete':
+                                checked = audit_run(self.run_dir)
+                                atomic_json(self.run_dir / 'verification.json', checked)
+                                if checked['status'] != 'PASS':
+                                    self.status, self.message = 'error', '报告未通过独立核对，已保留文件，请检查本地验收记录。'
+                                    return self._snapshot()
                             self.summary=refreshed
                             self.status='done' if readiness['status']=='complete' else 'needs_analysis'
                             self.message='智能体已更新研究报告。' if self.status=='done' else '阶段报告已更新，仍有证据待补。'
                 except (StopRun,OSError,ValueError):
                     pass
-            return dict(status=self.status, message=self.message, mode=self.mode,
+            return self._snapshot()
+
+    def _snapshot(self):
+        usable = self.usable_results
+        if self.active_store and usable:
+            from selection_report import eligible_ids
+            try:
+                current = eligible_ids(self.active_store)
+                usable = [row for row in usable if row['target']['id'] in current]
+            except (RuntimeError, KeyError, OSError, StopRun):
+                # A concurrent update cannot leave a stale qualified card visible.
+                usable = []
+        return dict(status=self.status, message=self.message, mode=self.mode,
                         key_ready=bool(self.key) or (self.key_remembered and self.credentials.exists()),
                         key_saved=self.credentials.exists(), key_storage_available=self.credentials.available, key_notice=self.key_notice,
                         assistant_connected=bool(self.automatic.available() if self.automatic else self.bridge and self.bridge.available()),
@@ -92,7 +121,8 @@ class Session:
                         can_resume=bool(self.automatic and self.analysis_interrupted and self.mode=='live' and self.run_dir and self.summary and self.status in ('needs_analysis','error')),
                         pricing=self.pricing, answers=self.answers,
                         summary=self.summary, report_url='/report/report.html' if self.summary else None,
-                        output_dir=str(self.run_dir) if self.run_dir else None, version='0.2.0')
+                        output_dir=str(self.run_dir) if self.run_dir else None, version='0.2.0',
+                        usable_results=usable)
 
     def start(self, data):
         with self.lock:
@@ -123,6 +153,10 @@ class Session:
             self.summary = None
             self.analysis_interrupted = False
             self.timings = []
+            self.usable_results = []
+            self.run_started = time.monotonic()
+            self.first_result_seconds = None
+            self.active_store = None
             if self.bridge and not self.automatic: atomic_json(self.bridge.folder/'status.json',{'terminal':False})
             self.cancelled.clear()
             self.status, self.message = 'running', '正在准备本轮研究…'
@@ -145,18 +179,75 @@ class Session:
 
     def timed(self, stage, action):
         start = time.monotonic()
+        before_requests = len(self.active_store.reservations()) if self.active_store else 0
+        before_models = len(getattr(self.assistant, 'metrics', []))
+        before_cache = getattr(self.active_store, 'cache_hits', 0)
         outcome = 'failed'
         try:
             result = action()
             outcome = 'done'
             return result
         finally:
-            self.timings.append({'stage':stage,'seconds':round(time.monotonic()-start,3),'status':outcome,'at':now()})
+            attempts = getattr(self.assistant, 'metrics', [])[before_models:]
+            self.timings.append({'stage':stage,'seconds':round(time.monotonic()-start,3),'status':outcome,'at':now(),
+                                 'candidate_count':len(self.active_store.state['candidates']) if self.active_store else 0,
+                                 'request_attempts':(len(self.active_store.reservations()) if self.active_store else 0) - before_requests,
+                                 'cache_hits':getattr(self.active_store, 'cache_hits', 0) - before_cache,
+                                 'model_generations':len(attempts),
+                                 'model_retries':sum(row['attempt'] > 1 for row in attempts),
+                                 'model_attempts':attempts})
             if self.run_dir and self.run_dir.is_dir():
                 try:
-                    atomic_json(self.run_dir/'timings.json', {'stages':self.timings})
+                    atomic_json(self.run_dir/'timings.json', {'stages':self.timings,
+                        'first_usable_result_seconds':self.first_result_seconds,
+                        'elapsed_seconds':round(time.monotonic() - self.run_started, 3) if self.run_started else None})
                 except OSError:
                     pass
+
+    def publish_usable(self, store):
+        from selection_report import eligible_ids
+        rows = []
+        for vid in sorted(eligible_ids(store), key=lambda key: -(store.state['results'][key].get('ratio') or 0)):
+            result = store.state['results'][vid]
+            rows.append({'status':'qualified', 'ratio':result['ratio'], 'play_count':result['play_count'],
+                         'median_plays':result['median_plays'],
+                         'demo':bool(store.state.get('demo')),
+                         'target':{key: store.state['candidates'][vid].get(key) for key in
+                                   ('id', 'title', 'author_name', 'followers', 'published_at')}})
+        with self.lock:
+            self.usable_results = rows
+            if rows and self.first_result_seconds is None and self.run_started:
+                self.first_result_seconds = round(time.monotonic() - self.run_started, 3)
+
+    def refresh_review(self, store):
+        packet = review_packet(store, MAX_SEARCH_ROUNDS - 1)
+        packet['remaining_requests'] = 0
+        def accept(answer):
+            if isinstance(answer, dict) and answer.get('next_keywords'):
+                raise StopRun('写作阶段更新证据只重审已有候选，不再补搜。')
+            return accept_review(store, answer, expected=packet['review_fingerprints'])
+        self.timed('review_changed_evidence', lambda:self.assistant.ask('semantic-review', packet, accept))
+        self.publish_usable(store)
+
+    def write_report(self, store):
+        for attempt in range(2):
+            packet = analysis_packet(store)
+            stale = [vid for vid in pending_reviews(store)
+                     if store.state['candidates'][vid]['review'].get('decision') in ('include', 'exclude')]
+            if stale:
+                self.refresh_review(store)
+                packet = analysis_packet(store)
+            expected = {vid:review_fingerprint(store, vid) for vid in store.state['candidates']}
+            def accept(answer):
+                if any(review_fingerprint(store, vid) != fingerprint for vid, fingerprint in expected.items()):
+                    raise ReviewChanged()
+                return accept_research(store, answer, expected_format=FORMAT)
+            try:
+                return self.timed('write', lambda:self.assistant.ask('content-analysis', packet, accept))
+            except ReviewChanged:
+                if attempt == 1:
+                    raise AssistanceNeeded('写作期间证据连续变化，已保留数据；请稳定证据后继续分析。') from None
+                self.refresh_review(store)
 
     def run(self, config, resume=False):
         store = None
@@ -164,6 +255,7 @@ class Session:
             if self.mode == 'demo':
                 self.message = '正在用合成的 FDE 数据走完整流程；不会联网。'
                 store, _ = run_demo(self.run_dir, selection=True)
+                self.active_store = store
                 summary = render(store)
             else:
                 if resume:
@@ -182,6 +274,8 @@ class Session:
                     config['keywords'] = planned
                 if not resume:
                     store = Store.create(self.run_dir, config)
+                self.active_store = store
+                store.on_verified = lambda:self.publish_usable(store)
                 with store.lock():
                     if resume:
                         client = CachedClient(store)
@@ -190,10 +284,10 @@ class Session:
                         self.message = '正在搜索本轮候选…'
                         self.timed('search', lambda:search(store, client, page_limit=1))
                         review_by_rules(store, self.answers)
+                        self.publish_usable(store)
                         write_inbox(store)
                         self.summary = render(store)
-                    pending = any(v['review']['decision'] in ('pending','unsure') or v['review'].get('method')=='keyword-rule'
-                                  for v in store.state['candidates'].values())
+                    pending = bool(pending_reviews(store))
                     rounds = [MAX_SEARCH_ROUNDS - 1] if resume and pending else [] if resume else range(MAX_SEARCH_ROUNDS)
                     for round_number in rounds:
                         self.message = '智能体正在复核内容相关性，并判断是否需要补搜…'
@@ -203,8 +297,9 @@ class Session:
                         def accept(answer):
                             if resume and isinstance(answer,dict) and answer.get('next_keywords'):
                                 raise StopRun('接续分析只使用已有数据，不能补搜。')
-                            return accept_review(store,answer)
+                            return accept_review(store,answer,expected=packet['review_fingerprints'])
                         response=self.timed('review', lambda:self.assistant.ask('semantic-review',packet,accept))
+                        self.publish_usable(store)
                         if any(v['review']['decision']=='include' for v in store.state['candidates'].values()):
                             self.message = '正在同时核对几位作者的作品和播放量…'
                             self.timed('verify', lambda:verify(store, client))
@@ -214,6 +309,7 @@ class Session:
                         self.message = '按智能体的研究判断补充候选，仍使用本轮原有额度…'
                         self.timed('supplement', lambda:search(store,client,next_words,response['search_reason'] or '继续查找产生相关小号的关键词，按剩余额度核验。',page_limit=1))
                         review_by_rules(store,self.answers)
+                        self.publish_usable(store)
                         write_inbox(store)
                         self.summary=render(store)
                     if resume and not rounds and any(v['review']['decision']=='include' for v in store.state['candidates'].values()):
@@ -222,10 +318,16 @@ class Session:
                     write_inbox(store)
                     self.summary=render(store)
                     self.message = '正在整理值得借鉴的做法和具体案例…'
-                    self.timed('write', lambda:self.assistant.ask('content-analysis',analysis_packet(store),lambda answer:accept_research(store,answer,expected_format=FORMAT)))
+                    self.write_report(store)
                     self.message = '正在整理原作品封面和图文报告…'
                     self.timed('covers', lambda:cache_covers(store))
                     summary = self.timed('render', lambda:render(store))
+            self.publish_usable(store)
+            if summary.get('report_complete') and summary.get('report_format') == FORMAT:
+                checked = self.timed('verify_delivery', lambda:audit_run(self.run_dir))
+                atomic_json(self.run_dir / 'verification.json', checked)
+                if checked['status'] != 'PASS':
+                    raise StopRun('报告未通过独立核对，已保留数据与验收记录，不能视为完成。')
             with self.lock:
                 self.summary = summary
                 self.status = 'done' if summary.get('report_complete') else 'needs_analysis'
@@ -322,16 +424,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == '/api/state':
             self.reply(200, self.session.snapshot())
+        elif path == '/api/provenance':
+            self.reply(200, {'startup': self.session.source_at_start, 'disk': source_identity(ROOT),
+                             'report_format': FORMAT,
+                             'output_dir': str(self.session.run_dir) if self.session.run_dir else None})
         elif path.startswith('/report/') and path[len('/report/'):] in EXPORTS and self.session.summary:
             name = path[len('/report/'):]
             body = (self.session.run_dir / name).read_bytes()
             if name == 'report.html':
                 # Navigation belongs to the live app; standalone reports remain portable.
-                navigation = ('<style>.report-nav{display:flex;justify-content:flex-end;margin-bottom:20px}'
+                navigation = ('<!-- live-navigation:start --><style>.report-nav{display:flex;justify-content:flex-end;margin-bottom:20px}'
                               '.report-nav a{padding:8px 0;font-size:14px}'
                               '@media print{.report-nav{display:none}}</style>'
                               '<nav class="report-nav" aria-label="报告导航">'
-                              '<a id="new-research-link" href="/?new=1">新研究 ↗</a></nav>')
+                              '<a id="new-research-link" href="/?new=1">新研究 ↗</a></nav><!-- live-navigation:end -->')
                 body = body.replace(b'<main>', b'<main>' + navigation.encode('utf-8'), 1)
             self.reply(200, body, EXPORTS[name])
         else:
@@ -456,6 +562,7 @@ def main():
     url = 'http://127.0.0.1:%s/#%s' % (server.server_port, server.session.token)
     ready = {'url': url, 'pid': os.getpid(), 'data_dir': str(server.session.data_dir), 'bridge_dir':args.bridge_dir,
              'source_dir': str(ROOT), 'report_format': FORMAT,
+             'source_at_start': server.session.source_at_start,
              'assistant_mode':server.session.automatic.name if server.session.automatic else 'host'}
     if args.ready_file:
         atomic_json(args.ready_file, ready)

@@ -79,6 +79,8 @@ def demo_research(store):
             'takeaway':'可以选择自己行业中的一个小任务，展示输入、处理、输出和人工检查；效果需要自行验证。',
             'limitations':'完全合成的教学样例；没有真实客户、项目效果或平台传播结论。',
             'evidence_ids':[entry['id']]}
+    # The fixture's labels explicitly cover its synthetic transcripts as well.
+    apply_review(store, {vid: dict(v['review']) for vid, v in store.state['candidates'].items()})
     answer={'headline':'从具体任务出发，观察内容怎样组织','lead':'这是一份完整研究结构的合成演示：先归纳内容方向，再拆解具体案例，最后把观察转换成可测试的选题。所有数据与逐字稿均为教学构造。',
         'findings':[{'title':'用任务解释抽象概念','text':'样例没有停在概念介绍，而是沿一个可以检查的业务动作组织讲述。','video_ids':selected},
                     {'title':'把人工检查写进流程','text':'自动化演示以异常处理和人工确认收尾，提醒读者结果仍需核实。','video_ids':selected}],

@@ -3,7 +3,7 @@ import json
 import math
 import re
 from pathlib import Path
-from core import StopRun, digest, now, stamp
+from core import StopRun, ValidationIssue, digest, now, stamp
 
 FORMAT = 'selection-report-v1'
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,10 +33,14 @@ def instructions():
 
 
 def eligible_ids(store):
+    from research import review_fingerprint
+    from workflow import verification_fingerprint
     return {vid for vid, r in store.state['results'].items()
             if r.get('status') == 'qualified'
             and store.state['candidates'].get(vid, {}).get('review', {}).get('decision') == 'include'
-            and store.state['candidates'][vid]['review'].get('method') == 'human-or-agent'}
+            and store.state['candidates'][vid]['review'].get('method') == 'human-or-agent'
+            and store.state['candidates'][vid]['review'].get('input_hash') == review_fingerprint(store, vid)
+            and r.get('verification_fingerprint') == verification_fingerprint(store, store.state['candidates'][vid], r)}
 
 
 def schema(packet):
@@ -45,16 +49,28 @@ def schema(packet):
     strings = {'type': 'array', 'items': string}
     allowed = packet.get('featured_candidates', [])
     citations = sorted({e['id'] for vid in allowed for e in packet['evidence'].get(vid, [])})
+    def array(items, minimum, maximum):
+        return {'type': 'array', 'items': items, 'minItems': minimum, 'maxItems': maximum}
     case = object_schema({'video_id': {'type': 'string', 'enum': allowed} if allowed else string,
-                          'paragraphs': strings,
-                          'evidence_ids': {'type': 'array', 'items': {'type': 'string', 'enum': citations} if citations else string}})
-    lesson = object_schema({'title': string, 'cases': {'type': 'array', 'items': case},
-                            'applications': {'type': 'array', 'items': object_schema({'audience': string, 'idea': string})},
+                          'paragraphs': array(string, 2, 6),
+                          'evidence_ids': array({'type': 'string', 'enum': citations} if citations else string, 1, 10)})
+    lesson = object_schema({'title': string, 'cases': array(case, 1, 3),
+                            'applications': array(object_schema({'audience': string, 'idea': string}), 1, 4),
                             'takeaway': string})
     return object_schema({'format': {'type': 'string', 'enum': [FORMAT]}, 'topic_label': string, 'title': string,
-                          'intro': strings, 'lessons': {'type': 'array', 'items': lesson},
-                          'closing': object_schema({'questions': strings, 'paragraphs': strings}),
-                          'limitations': strings})
+                          'intro': array(string, 1, 3), 'lessons': array(lesson, 1 if allowed else 0, 2 if allowed else 0),
+                          'closing': object_schema({'questions': array(string, 1, 4), 'paragraphs': array(string, 1, 3)}),
+                          'limitations': array(string, 1, 5)})
+
+
+def at(path, check, *args, **kwargs):
+    try:
+        return check(*args, **kwargs)
+    except ValidationIssue:
+        raise
+    except StopRun as error:
+        # These helpers emit fixed application rules, never provider exception bodies.
+        raise ValidationIssue(path, str(error)) from None
 
 
 def exact(value, keys, name):
@@ -125,57 +141,60 @@ def completion_hash(store):
 
 def validate(store, answer):
     from research import evidence, evidence_hash, ids
-    exact(answer, FIELDS, '选题报告')
+    at('$', exact, answer, FIELDS, '选题报告')
     if answer['format'] != FORMAT:
-        raise StopRun('选题报告格式版本不匹配。')
+        raise ValidationIssue('$.format', '选题报告格式版本不匹配。')
     eligible = eligible_ids(store)
-    result = {'format': FORMAT, 'kind': 'selection-explainer', 'topic_label': prose(answer['topic_label'], '主题', 40),
-              'headline': prose(answer['title'], '报告标题', 120), 'intro': paragraphs(answer['intro'], '引言', 1, 3),
-              'lessons': [], 'cases': {}, 'limitations': paragraphs(answer['limitations'], '依据说明', 1, 5),
+    result = {'format': FORMAT, 'kind': 'selection-explainer', 'topic_label': at('$.topic_label', prose, answer['topic_label'], '主题', 40),
+              'headline': at('$.title', prose, answer['title'], '报告标题', 120), 'intro': at('$.intro', paragraphs, answer['intro'], '引言', 1, 3),
+              'lessons': [], 'cases': {}, 'limitations': at('$.limitations', paragraphs, answer['limitations'], '依据说明', 1, 5),
               'written_at': now()}
     lessons = answer['lessons']
     if not isinstance(lessons, list) or not (1 if eligible else 0) <= len(lessons) <= 2:
-        raise StopRun('请基于已核验案例给出 1–2 个选题方法；无合格案例时不编造案例。')
+        raise ValidationIssue('$.lessons', '请基于已核验案例给出 1–2 个选题方法；无合格案例时不编造案例。')
     seen = set()
-    for lesson in lessons:
-        exact(lesson, {'title', 'cases', 'applications', 'takeaway'}, '选题方法')
-        item = {'title': prose(lesson['title'], '方法标题', 100), 'cases': [], 'applications': [],
-                'takeaway': prose(lesson['takeaway'], '可借鉴的做法', 500)}
+    for lesson_index, lesson in enumerate(lessons):
+        lesson_path = '$.lessons[%s]' % lesson_index
+        at(lesson_path, exact, lesson, {'title', 'cases', 'applications', 'takeaway'}, '选题方法')
+        item = {'title': at(lesson_path+'.title', prose, lesson['title'], '方法标题', 100), 'cases': [], 'applications': [],
+                'takeaway': at(lesson_path+'.takeaway', prose, lesson['takeaway'], '可借鉴的做法', 500)}
         if not isinstance(lesson['cases'], list) or not 1 <= len(lesson['cases']) <= 3:
-            raise StopRun('每个方法需要 1–3 个本轮已核验案例。')
-        for case in lesson['cases']:
-            exact(case, {'video_id', 'paragraphs', 'evidence_ids'}, '案例解读')
+            raise ValidationIssue(lesson_path+'.cases', '每个方法需要 1–3 个本轮已核验案例。')
+        for case_index, case in enumerate(lesson['cases']):
+            case_path = lesson_path + '.cases[%s]' % case_index
+            at(case_path, exact, case, {'video_id', 'paragraphs', 'evidence_ids'}, '案例解读')
             vid = case['video_id']
             if not isinstance(vid, str) or vid not in eligible or vid in seen:
-                raise StopRun('案例必须通过本轮相关性与数据核验，且不能重复列入。')
+                raise ValidationIssue(case_path + '.video_id', '案例必须通过本轮相关性与数据核验，且不能重复列入。')
             seen.add(vid)
             if len(seen) > 3:
-                raise StopRun('正文精选案例至多 3 条，其他结果保留在明细。')
+                raise ValidationIssue('$.lessons', '正文精选案例至多 3 条，其他结果保留在明细。')
             r = store.state['results'][vid]
             values = [r.get('play_count'), r.get('median_plays'), r.get('ratio')]
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in values):
                 raise StopRun('精选案例的播放统计尚未完成，不能纳入正文。')
             available = {e['id']: e for e in evidence(store, vid)}
-            refs = ids(case['evidence_ids'], set(available), '案例依据', 1, 10)
+            refs = at(case_path + '.evidence_ids', ids, case['evidence_ids'], set(available), '案例依据', 1, 10)
             deep = any(available[i]['kind'] in ('transcript', 'video-notes') for i in refs)
-            body = paragraphs(case['paragraphs'], '案例讲述', 2, 6, body_allowed=deep)
+            body = at(case_path + '.paragraphs', paragraphs, case['paragraphs'], '案例讲述', 2, 6, body_allowed=deep)
             if not deep and any(word in ''.join(body) for word in BODY_CLAIMS):
-                raise StopRun('只有标题和简介的案例不能还原视频开场、镜头或口播。')
+                raise ValidationIssue(case_path+'.paragraphs', '只有标题和简介的案例不能还原视频开场、镜头或口播。')
             clean = {'video_id': vid, 'paragraphs': body, 'evidence_ids': refs,
                      'basis': 'content-read' if deep else 'title-description'}
             item['cases'].append(clean)
             result['cases'][vid] = clean
         apps = lesson['applications']
         if not isinstance(apps, list) or not 1 <= len(apps) <= 4:
-            raise StopRun('每个方法需要 1–4 个具体的迁移示例。')
-        for app in apps:
-            exact(app, {'audience', 'idea'}, '迁移示例')
-            item['applications'].append({'audience': prose(app['audience'], '示例场景', 60),
-                                         'idea': prose(app['idea'], '示例选题', 300, suggestion=True, body_allowed=True)})
+            raise ValidationIssue(lesson_path+'.applications', '每个方法需要 1–4 个具体的迁移示例。')
+        for app_index, app in enumerate(apps):
+            app_path = lesson_path + '.applications[%s]' % app_index
+            at(app_path, exact, app, {'audience', 'idea'}, '迁移示例')
+            item['applications'].append({'audience': at(app_path+'.audience', prose, app['audience'], '示例场景', 60),
+                                         'idea': at(app_path+'.idea', prose, app['idea'], '示例选题', 300, suggestion=True, body_allowed=True)})
         result['lessons'].append(item)
-    exact(answer['closing'], {'questions', 'paragraphs'}, '结尾')
-    result['closing'] = {'questions': paragraphs(answer['closing']['questions'], '选题提问', 1, 4),
-                         'paragraphs': paragraphs(answer['closing']['paragraphs'], '结尾建议', 1, 3, suggestion=True)}
+    at('$.closing', exact, answer['closing'], {'questions', 'paragraphs'}, '结尾')
+    result['closing'] = {'questions': at('$.closing.questions', paragraphs, answer['closing']['questions'], '选题提问', 1, 4),
+                         'paragraphs': at('$.closing.paragraphs', paragraphs, answer['closing']['paragraphs'], '结尾建议', 1, 3, suggestion=True)}
     result['lead'] = '\n\n'.join(result['intro'])
     result['status'] = 'complete' if seen or not unresolved_data(store) else 'partial'
     result['data_hash'] = digest({'candidates': store.state['candidates'], 'results': store.state['results']})

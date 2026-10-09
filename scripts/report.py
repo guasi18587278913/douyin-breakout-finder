@@ -47,7 +47,7 @@ def write_csv(path, headers, rows):
             w.writerow([csv_safe(v) for v in row])
     temp.replace(path)
 
-def render(store):
+def render(store, write=True):
     s, c = store.state, store.config
     demo = s.get('demo', False)
     results = sorted(s['results'].values(), key=lambda r: r.get('ratio') or -1, reverse=True)
@@ -79,8 +79,9 @@ def render(store):
             '这是按配置单价为所有尝试预留的金额，不是已核实账单；失败请求也保守计入。实际以 TikHub 账单为准。',
         'keyword_quality': metrics, 'stops': s['stops'],
     }
-    atomic_json(store.root / 'results.json', results)
-    atomic_json(store.root / 'keyword-quality.json', metrics)
+    if write:
+        atomic_json(store.root / 'results.json', results)
+        atomic_json(store.root / 'keyword-quality.json', metrics)
     rows, base_rows = [], []
     for r in results:
         if editorial and r['target']['id'] not in eligible: continue
@@ -93,9 +94,10 @@ def render(store):
             base_rows.append([t['title'], t['author_name'], b['title'], date_text(b['published_at']),
                               s['stats'].get(b['id'], {}).get('play_count'),
                               '' if demo else 'https://www.douyin.com/video/' + b['id']])
-    write_csv(store.root / 'results.csv', ['状态','标题','作者','采集时粉丝','发布日期(北京时间)',
-              '播放量','账号正常播放量','倍数','对照数量','说明','原视频'], rows)
-    write_csv(store.root / 'comparisons.csv', ['目标标题','作者','对照作品','对照日期','对照播放量','对照链接'], base_rows)
+    if write:
+        write_csv(store.root / 'results.csv', ['状态','标题','作者','采集时粉丝','发布日期(北京时间)',
+                  '播放量','账号正常播放量','倍数','对照数量','说明','原视频'], rows)
+        write_csv(store.root / 'comparisons.csv', ['目标标题','作者','对照作品','对照日期','对照播放量','对照链接'], base_rows)
     if editorial:
         selected = [r for r in selected if r['target']['id'] in eligible]
     table = ''
@@ -157,6 +159,8 @@ def render(store):
         content += '<details><summary>运行中的停止原因</summary><ul>' + ''.join('<li>%s：%s</li>' % (E(x['phase']),E(x['message'])) for x in s['stops']) + '</ul></details>'
     content += '</details>'
     content += ('' if editorial else '<p><a href="summary.json">方法与预算记录</a> · <a href="candidates.json">候选与相关性审查</a></p>') + '<footer>报告只保存公开研究字段。密钥不写入报告、研究缓存或分享包。对外分享运行目录前，请自行检查主题、评论和内容笔记是否适合公开。</footer></main></body></html>'
+    if not write:
+        return content
     temp = store.root / 'report.html.tmp'
     temp.write_text(content,encoding='utf-8')
     temp.replace(store.root / 'report.html')

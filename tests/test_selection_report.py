@@ -146,6 +146,8 @@ class SelectionReportContract(unittest.TestCase):
     def test_untrusted_original_metadata_is_escaped(self):
         vid = self.answer['lessons'][0]['cases'][0]['video_id']
         self.store.state['candidates'][vid]['title'] = '<script>alert(1)</script>'
+        from workflow import apply_review
+        apply_review(self.store, {vid:dict(self.store.state['candidates'][vid]['review'])})
         accept_research(self.store, self.answer); render(self.store)
         doc = (self.store.root / 'report.html').read_text(encoding='utf-8')
         self.assertNotIn('<script>alert(1)</script>', doc)

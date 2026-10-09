@@ -4,7 +4,8 @@ function $(id) { const el=document.getElementById(id); if(!el) throw new Error('
 /** @param {string} id */
 function input(id) { const el=$(id); if(!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) throw new Error('输入项缺失'); return el; }
 /** @typedef {{topic:string, keywords:string[], anchors:string[]}} Brief */
-/** @typedef {{status:string,message:string,mode:string,key_ready:boolean,key_saved:boolean,key_storage_available:boolean,key_notice:string,assistant_mode:string,assistant_label:string,can_resume:boolean,answers:Brief,summary:{report_format:string,demo:boolean,candidate_count:number,qualified_count:number,limited_count:number,pending_count:number,review_pending_count:number,report_complete:boolean,research_status:string,generated_at:string},report_url:string,output_dir:string}} Snapshot */
+/** @typedef {{status:string,ratio:number,play_count:number,median_plays:number,demo?:boolean,target:{id:string,title:string,author_name:string,followers:number}}} UsableResult */
+/** @typedef {{status:string,message:string,mode:string,key_ready:boolean,key_saved:boolean,key_storage_available:boolean,key_notice:string,assistant_mode:string,assistant_label:string,can_resume:boolean,answers:Brief,summary:{report_format:string,demo:boolean,candidate_count:number,qualified_count:number,limited_count:number,pending_count:number,review_pending_count:number,report_complete:boolean,research_status:string,generated_at:string},report_url:string,output_dir:string,usable_results:UsableResult[]}} Snapshot */
 /** @type {Partial<Snapshot>} */ let state={};
 let lastReportStamp='';
 let refined=false, selectedFocus='all', pendingStart=false;
@@ -58,9 +59,10 @@ async function action(button,fn){
 function metric(value,label){const div=document.createElement('div'),strong=document.createElement('strong'),span=document.createElement('span');strong.textContent=String(value);span.textContent=label;div.append(strong,span);return div;}
 /** @param {number|null} value */
 function number(value){return value==null?'未取得':new Intl.NumberFormat('zh-CN',{maximumFractionDigits:1}).format(value);}
-/** @param {Array<{status:string,ratio:number,play_count:number,median_plays:number,target:{title:string,author_name:string,followers:number}}>} results */
+/** @param {UsableResult[]} results */
 function highlights(results){
-  const chosen=results.filter(r=>r.status==='qualified').slice(0,4);
+  const chosen=results.filter(r=>r.status==='qualified');
+  $('highlights').replaceChildren();
   for(const r of chosen){
     const card=document.createElement('article');card.className='highlight';
     const title=document.createElement('h3');title.textContent=r.target.title;
@@ -69,13 +71,29 @@ function highlights(results){
     const ratio=document.createElement('div');ratio.className='ratio';ratio.textContent=number(r.ratio)+'×';
     const sub=document.createElement('small');sub.textContent='账号正常播放量的倍数';ratio.append(sub);
     const comparison=document.createElement('div');comparison.className='comparison';comparison.textContent='目标播放 '+number(r.play_count)+' / 对照 '+number(r.median_plays);
-    stats.append(ratio,comparison);card.append(title,meta,stats);$('highlights').append(card);
+    stats.append(ratio,comparison);card.append(title,meta,stats);
+    if(!r.demo && /^\d{10,30}$/.test(r.target.id)){
+      const link=document.createElement('a');link.href='https://www.douyin.com/video/'+r.target.id;
+      link.textContent='看原视频 ↗';link.target='_blank';link.rel='noopener noreferrer';card.append(link);
+    }
+    $('highlights').append(card);
   }
 }
 async function poll(){
   try{
     state=await api('/api/state');$('progress').textContent=state.message;updateConnection();
-    if(state.status==='running'){timer=window.setTimeout(poll,1200);return;}
+    if(state.status==='running'){
+      const usable=state.usable_results || [];highlights(usable);
+      if(usable.length){
+        $('result-title').textContent='这些作品已核验，可以先看。';
+        $('result-note').textContent='研究仍在继续，选题解读写好后会自动打开。';
+        $('demo-banner').hidden=!usable.some(r=>r.demo);
+      }else{
+        $('result-title').textContent='正在寻找，值得复看的内容。';
+        $('result-note').textContent='';$('demo-banner').hidden=true;
+      }
+      timer=window.setTimeout(poll,1200);return;
+    }
     const summary=state.summary;
     if(state.status==='done' && summary?.report_complete && state.report_url){
       clearTimeout(timer);location.replace(state.report_url);return;
@@ -95,7 +113,7 @@ async function poll(){
       $('report-link-label').textContent=summary.report_complete?(summary.report_format==='selection-report-v1'?'打开选题解读报告':'打开完整研究报告'):'查看阶段报告';
       $('result-note').textContent=summary.report_complete?'报告包含主题发现、逐条案例与对照证据；仍请复看原视频。':state.assistant_mode==='host'?'阶段报告已保存，等待宿主助手补充分析或证据。':state.can_resume?'分析中断，现有结果已保存。点击“继续生成报告”会复用已有数据，不再次查询 TikHub；分析仍使用当前智能体额度。':'已完成现有材料的分析。报告中标明了尚缺的正文证据或数据，重复生成不能补齐这些材料。';
       $('highlights').replaceChildren();
-      const response=await fetch('/report/results.json');if(response.ok)highlights(await response.json());
+      highlights(state.usable_results || []);
     }
   }catch(e){$('loading').hidden=true;$('progress').textContent=message(e);$('retry').hidden=false;}
 }

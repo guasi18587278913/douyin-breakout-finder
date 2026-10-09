@@ -77,18 +77,50 @@ def add_evidence(store,vid,source,kind,note):
     return entry
 
 
+def review_fingerprint(store, vid):
+    """Bind semantic decisions to their input, not to an agent's completion claim."""
+    candidate = store.state['candidates'][vid]
+    return digest({'conditions': {key: store.config.get(key) for key in
+                                  ('topic', 'scope', 'intake', 'max_followers')},
+                   'candidate': {key: candidate.get(key) for key in
+                                 ('id', 'title', 'author_id', 'author_name', 'followers', 'likes')},
+                   'evidence': [{key: item.get(key) for key in ('id', 'kind', 'text', 'sha256')}
+                                for item in evidence(store, vid)]})
+
+
+def pending_reviews(store):
+    return {vid: review_fingerprint(store, vid) for vid, candidate in store.state['candidates'].items()
+            if candidate.get('review', {}).get('decision') not in ('include', 'exclude')
+            or candidate['review'].get('method') != 'human-or-agent'
+            or candidate['review'].get('input_hash') != review_fingerprint(store, vid)}
+
+
 def review_packet(store,round_number):
+    pending = pending_reviews(store)
+    candidates = []
+    for vid in pending:
+        row = {key: store.state['candidates'][vid].get(key) for key in
+               ('id', 'title', 'author_name', 'followers', 'likes', 'queries', 'review')}
+        row['evidence'] = [{'kind': item['kind'], 'text': item['text'][:2000],
+                            'truncated': len(item['text']) > 2000}
+                           for item in evidence(store, vid) if item['kind'] != 'title-description']
+        candidates.append(row)
     return {'run_dir':str(store.root),'topic':store.config['topic'],'scope':store.config['scope'],
             'round':round_number,'max_rounds':MAX_SEARCH_ROUNDS,'keyword_quality':keyword_quality(store),'max_followers':store.config['max_followers'],
             'remaining_requests':max(0,store.config['max_requests']-len(store.reservations())),
-            'candidates':[{k:v.get(k) for k in ['id','title','author_name','followers','likes','queries','review']} for v in store.state['candidates'].values()],
+            'candidates':candidates, 'review_fingerprints':pending,
+            'candidate_count':len(store.state['candidates']),
+            'reused_review_count':len(store.state['candidates']) - len(pending),
             'queries':[{k:q.get(k) for k in ['pages','complete','error']}|{'keyword':kw} for kw,q in store.state['queries'].items()],
-            'instructions':'逐条语义复核，不能用连续词匹配代替理解。小号主榜仍遵守粉丝限制。可建议至多3个同主题的新搜索词：优先具体用途、问题或使用场景，避开只反复返回大号或重复作品的词。程序会先核验已有小号，再按结果决定换词或翻页；正文精选数量不限制总结果数。round>=2时next_keywords必须为空，最多补搜两轮；不能调整预算。返回 reviews（所有候选ID）、next_keywords、search_reason。'}
+            'instructions':'逐条语义复核，不能用连续词匹配代替理解。candidates 仅包含新增、证据或研究条件改变、或上次不确定的候选；旧判断由程序合并，不要重复输出。小号主榜仍遵守粉丝限制。可建议至多3个同主题的新搜索词：优先具体用途、问题或使用场景，避开只反复返回大号或重复作品的词。程序会先核验已有小号，再按结果决定换词或翻页；正文精选数量不限制总结果数。round>=2时next_keywords必须为空，最多补搜两轮；不能调整预算。返回 reviews（本次 candidates 的全部ID）、next_keywords、search_reason。'}
 
 
-def accept_review(store,answer):
+def accept_review(store,answer,expected=None):
     if not isinstance(answer,dict) or not isinstance(answer.get('reviews'),dict):raise StopRun('请提交 reviews 对象。')
-    if set(answer['reviews'])!=set(store.state['candidates']):raise StopRun('必须覆盖本轮所有候选，不能静默漏掉待审视频。')
+    current = pending_reviews(store)
+    expected = current if expected is None else expected
+    if expected != current:raise StopRun('审核期间候选或研究条件发生变化，请重新读取审核材料。')
+    if set(answer['reviews'])!=set(expected):raise StopRun('必须覆盖本次待审候选，不能静默漏掉或重复提交已复用的视频。')
     reviews={}
     for vid,r in answer['reviews'].items():
         if not isinstance(r,dict) or r.get('decision') not in ('include','exclude','unsure'):raise StopRun('请明确 include/exclude/unsure 和逐条理由。')
@@ -98,6 +130,9 @@ def accept_review(store,answer):
         raise StopRun('补搜词至多3个，每个不超过80字。')
     reason=text(answer.get('search_reason',''),'补搜理由',500,required=bool(words))
     apply_review(store,reviews)
+    for vid, fingerprint in expected.items():
+        store.state['candidates'][vid]['review']['input_hash'] = fingerprint
+    store.save()
     return {'next_keywords':list(dict.fromkeys(words)),'search_reason':reason}
 
 
