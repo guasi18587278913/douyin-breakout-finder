@@ -46,13 +46,15 @@ def main():
                         assert server.session.bridge is None
                         journal = (server.session.run_dir / 'requests.jsonl').read_bytes()
                         page.locator('#resume-analysis').click()
-                        expect(page.locator('#report-link-label')).to_have_text('打开完整研究报告', timeout=15000)
+                        expect(page).to_have_url(base + '/report/report.html', timeout=15000)
+                        expect(page.locator('.selection-report')).to_be_visible()
+                        expect(page.locator('#new-research-link')).to_be_visible()
                         expect(page.locator('#resume-analysis')).to_be_hidden()
                         assert journal == (server.session.run_dir / 'requests.jsonl').read_bytes()
                         assert '回到启动' not in page.locator('body').inner_text()
                         assert not errors, errors
                         page.screenshot(path=str(out / (provider + '-complete.png')), full_page=True)
-                        checks.append(provider + ': webpage starts analysis without host; offline retry preserves ledger')
+                        checks.append(provider + ': webpage starts analysis without host; offline retry preserves ledger and opens report directly')
                 finally:
                     server.session.cancelled.set()
                     if server.session.worker:

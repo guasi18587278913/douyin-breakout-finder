@@ -86,7 +86,7 @@ def main(argv=None):
             print('运行目录已创建：',store.root);return 0
         if args.command=='demo':
             from demo import run_demo
-            store,summary=run_demo(args.out)
+            store,summary=run_demo(args.out, selection=True)
             print(json.dumps(summary,ensure_ascii=False,indent=2))
             print('离线演示报告：',store.root/'report.html');return 0
         store=Store(args.run_dir)

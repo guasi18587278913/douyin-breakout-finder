@@ -1,11 +1,14 @@
 """TikHub direct adapter. No private configuration discovery and no automatic retry."""
 import json
 import os
+import threading
+import time
+from concurrent.futures import Future
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from core import APIError, StopRun, atomic_json, digest, now, number, read_json
+from core import APIError, BudgetStop, StopRun, atomic_json, digest, now, number, read_json
 
 BASE = 'https://api.tikhub.io'
 ENDPOINTS = {
@@ -160,8 +163,12 @@ def normalize(op, payload, params):
                 'has_more': data.get('has_more') in (1, True, '1'), 'cursor': data.get('cursor')}
     raise APIError('Unknown operation')
 
+class RateLimitError(APIError):
+    pass
+
+
 class TikHubClient:
-    def __init__(self, store, allow_paid=False, retry_failed=False, transport=None, api_key=None):
+    def __init__(self, store, allow_paid=False, retry_failed=False, transport=None, api_key=None, request_interval=0.5):
         if store.state.get('demo'):
             raise StopRun('Demo runs cannot use a network client.')
         if not allow_paid:
@@ -172,6 +179,13 @@ class TikHubClient:
         if not self.key or any(c in self.key for c in '\r\n'):
             raise StopRun('Set TIKHUB_API_KEY in this process environment; do not paste it into the chat or config.')
         self.transport = transport or self._send
+        self.parallel_safe = True
+        self._gate = threading.RLock()
+        self._flights = {}
+        self._next_start = {}
+        self._interval = max(0, float(request_interval))
+        self._fatal = None
+        self.cancel_event = threading.Event()
 
     def _send(self, op, params):
         method, path = ENDPOINTS[op]
@@ -187,6 +201,8 @@ class TikHubClient:
             raise StopRun('TikHub Key 无效或已过期，请在右上角重新连接。')
         if status == 402:
             raise StopRun('TikHub 余额不足，或该接口不支持免费额度。请到 TikHub 后台检查余额后再试。')
+        if status == 429:
+            raise RateLimitError('TikHub 暂时限制了请求速度，已保留当前结果，请稍后再试。')
         if status == 403:
             raise StopRun('TikHub 拒绝访问。请检查 Key 权限、账号状态与网络；程序没有自动重试。')
         if status != 200:
@@ -196,37 +212,88 @@ class TikHubClient:
         except (ValueError, UnicodeError):
             raise APIError('TikHub 返回的数据格式异常，请稍后再试。')
 
+    def _wait_for_slot(self, op):
+        while True:
+            if self.cancel_event.is_set():
+                raise StopRun('用户已结束会话，不再发送新的查询。')
+            with self._gate:
+                if self._fatal:
+                    raise self._fatal
+                remaining = self._next_start.get(op, 0) - time.monotonic()
+                if remaining <= 0:
+                    self._next_start[op] = time.monotonic() + self._interval
+                    return
+            self.cancel_event.wait(min(remaining, 0.2))
+
     def call(self, op, params, refresh=False):
         if op not in ENDPOINTS:
             raise StopRun('Unsupported operation')
         key = digest({'op': op, 'params': params})
-        path = self.store.root / 'cache' / (key + '.json')
-        cached = read_json(path)
-        if cached is not None and not refresh:
-            return cached['data']
-        if refresh and not self.retry_failed:
-            raise StopRun('Refreshing an incomplete response requires --retry-failed.')
-        attempts = [e for e in self.store.reservations() if e['key'] == key]
-        if attempts and (not self.retry_failed or len(attempts) >= 2):
-            raise APIError('This request has an unresolved or failed prior attempt. Use --retry-failed once after checking it.')
-        self.store.pricing_ready([op])
-        self.store.reserve(op, key, retry=bool(attempts))
-        self.store.event({'event': 'request', 'key': key, 'operation': op, 'params': params})
+        flight_key = (key, bool(refresh))
+        with self._gate:
+            future = self._flights.get(flight_key)
+            owner = future is None
+            if owner:
+                future = Future()
+                self._flights[flight_key] = future
+        if not owner:
+            return future.result()
         try:
+            result = self._call_once(op, params, key, refresh)
+            future.set_result(result)
+            return result
+        except BaseException as error:
+            if isinstance(error, Exception) and not isinstance(error, (APIError, BudgetStop)):
+                message = str(error).replace(self.key, '[REDACTED]') if isinstance(error, StopRun) else '本地保存没有完成，已停止后续新查询。'
+                with self._gate:
+                    self._fatal = StopRun(message)
+            future.set_exception(error)
+            raise
+        finally:
+            with self._gate:
+                self._flights.pop(flight_key, None)
+
+    def _call_once(self, op, params, key, refresh):
+        path = self.store.root / 'cache' / (key + '.json')
+        # Cache lookup, attempt checks and budget reservation are one critical section.
+        with self._gate:
+            if self._fatal:
+                raise self._fatal
+            if self.cancel_event.is_set():
+                raise StopRun('用户已结束会话，不再发送新的查询。')
+            cached = read_json(path)
+            if cached is not None and not refresh:
+                return cached['data']
+            if refresh and not self.retry_failed:
+                raise StopRun('Refreshing an incomplete response requires --retry-failed.')
+            attempts = [e for e in self.store.reservations() if e['key'] == key]
+            if attempts and (not self.retry_failed or len(attempts) >= 2):
+                raise APIError('This request has an unresolved or failed prior attempt. Use --retry-failed once after checking it.')
+            self.store.pricing_ready([op])
+            self.store.reserve(op, key, retry=bool(attempts))
+            self.store.event({'event': 'request', 'key': key, 'operation': op, 'params': params})
+        try:
+            self._wait_for_slot(op)
             payload = self.transport(op, params)
             projected = normalize(op, payload, params)
             safe = json.loads(json.dumps(projected, ensure_ascii=False).replace(self.key, '[REDACTED]'))
             record = {'operation': op, 'params': params, 'captured_at': now(), 'data': safe}
-            atomic_json(path, record)
-            self.store.event({'event': 'saved', 'key': key, 'operation': op,
-                              'cache': 'cache/' + key + '.json'})
+            with self._gate:
+                atomic_json(path, record)
+                self.store.event({'event': 'saved', 'key': key, 'operation': op,
+                                  'cache': 'cache/' + key + '.json'})
             return safe
-        except Exception as e:
-            error = str(e).replace(self.key, '[REDACTED]') if isinstance(e, StopRun) else type(e).__name__
-            try:
-                self.store.event({'event': 'failed', 'key': key, 'operation': op, 'error': error})
-            except OSError:
-                pass
-            if isinstance(e, StopRun):
+        except Exception as error:
+            safe_error = str(error).replace(self.key, '[REDACTED]') if isinstance(error, StopRun) else type(error).__name__
+            with self._gate:
+                if isinstance(error, RateLimitError):
+                    self._next_start[op] = max(self._next_start.get(op, 0), time.monotonic() + 2)
+                elif not isinstance(error, APIError):
+                    self._fatal = StopRun(safe_error if isinstance(error, StopRun) else '本地保存没有完成，已停止后续新查询。')
+                try:
+                    self.store.event({'event': 'failed', 'key': key, 'operation': op, 'error': safe_error})
+                except OSError:
+                    pass
+            if isinstance(error, StopRun):
                 raise
-            raise StopRun('Could not safely store this response: %s. Reservation retained; inspect the journal before retrying.' % type(e).__name__)
+            raise StopRun('Could not safely store this response: %s. Reservation retained; inspect the journal before retrying.' % type(error).__name__)

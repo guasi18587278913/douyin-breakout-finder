@@ -18,7 +18,7 @@ from pathlib import Path
 
 REPO = 'guasi18587278913/douyin-breakout-finder'
 NAME = 'douyin-breakout-finder'
-TOP = {'SKILL.md', 'README.md', 'project.json', 'install.py'}
+TOP = {'AGENTS.md', 'SKILL.md', 'README.md', 'project.json', 'install.py'}
 DIRS = {'scripts', 'assets', 'agents', 'references', 'docs'}
 
 

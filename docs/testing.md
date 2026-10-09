@@ -1,37 +1,96 @@
-# 测试范围
+# 测试范围与本轮结果
 
-本版已完成本机验收：68 项自动检查、11 项浏览器检查和 JavaScript 类型检查通过。远程验收待 GitHub workflow 权限授权后执行；没有把本机测试描述为远程通过。
+日期：2026-10-09。证据对应当前本地工作区；尚未提交、推送、发版或运行远程 CI。这里区分真实自动写作、离线协议模拟与完整新调研，不能互相替代。
 
-## 已有自动检查
+## 模块检查
 
-- 核心算法、预算、分页、缓存、失败请求与重试边界。
-- Key 不落盘、不返回页面状态；本地 Host、Origin 与会话验证。
-- 弱结构输入（缺字段、错误类型、无效枚举）不会开始收费查询。
-- 没有 USD 单位或不匹配接口的报价不能自动启用。
-- 安装、更新、备份、本地修改保护、数据目录独立。
-- 浏览器真实操作：自然语言输入 → 一次方向追问 → Key 弹窗；一键免费示例 → 报告及 CSV；桌面与手机布局。
+初次报告改版受影响模块合计 **112 项通过、0 项失败**。后续搜索覆盖与写作对照的结果见文末。命令使用 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p <文件> -q`，最终各模块均退出 0。
 
-## 没有宣称的测试
+| 模块 | 通过 | 范围 |
+| --- | ---: | --- |
+| test_skill.py | 32 | 原算法、分页、预算、缓存、失败与重试边界 |
+| test_research.py | 16 | 语义复核、登记证据、报告状态与旧格式兼容 |
+| test_analyst.py | 15 | 三种分析协议、握手、取消、超时和离线接续 |
+| test_product.py | 20 | 输入、报价、密钥、本地服务及原安装兼容 |
+| test_parallel.py | 9 | 并发上限、限速、原子预算、请求去重、串行合并、失败停止 |
+| test_selection_report.py | 20 | 新格式、引用与资格、数字来源、缺证据边界、保存后完成状态 |
 
-- 没有在 GitHub 上传真实 TikHub Key，没有执行付费研究。
-- 没有在 Codex、Claude Code、WorkBuddy、DeepSeek Harness 的真实客户端登录运行整个会话。
-- 没有调用 DeepSeek、MiniMax 等真实模型做语义质量比较。
-- 已通过官方文档的 curl 方式匿名读取四个接口报价；解析器严格校验接口身份。网络或格式异常时停止，不要求用户手填单价。
+最后加入耗时记录和完成状态调整后，使用 `PYTHONPATH=scripts:tests python3 -m unittest test_selection_report test_research test_analyst test_product -q` 重跑对应 **71 项，退出 0**；未变更的另两个模块沿用本轮结果。
 
-“安装路径与协议兼容”不代表“每个客户端/模型都已通过实测”。确定性数值与报告格式不依赖宿主模型；语义理解、关键词覆盖与深度拆解仍受模型和证据影响。
+`node --check assets/wizard.js`、TypeScript `tsc -p tsconfig.json`、`git diff --check` 均退出 0。本项目向导是 JavaScript，类型检查覆盖 assets/wizard.js。未额外执行全量生产构建。
 
-## 研究报告修复
+## 浏览器与成品
 
-新增宿主接入、付费前握手、多轮语义复核、正文证据登记和完整研究报告校验。已验证迟到/重复/串单响应、无宿主不收费、正文伪报拒绝、并发证据保存、离线补写后网页自动刷新。合成宿主闭环产生有具体内容的完整报告；真实缓存修复保持原账本不变，缺播放数据继续标阶段稿。
+- `python3 tests/browser_auto.py --out artifacts/report-acceptance/browser-auto`：**3 项通过、0 失败，退出 0**。覆盖 Codex、Claude Code、WorkBuddy/CodeBuddy 的合成子进程协议、页面开始、分析中断与离线续跑。
+- `python3 tests/browser_e2e.py --bundle . --out artifacts/report-acceptance/browser-e2e`：**11 项通过、0 失败，退出 0**。覆盖主题引导、Key 弹窗、合成示例、新报告、CSV、会话保护、390px 布局、刷新与密钥不泄露。
+- 最终真实缓存报告额外完成 **10 项显示检查，退出 0**：完成入口、2 条正文案例和 1 条更多作品、3 张原封面、原视频/作者链接、禁用术语、桌面和手机无横向溢出、可展开播放依据、打印渲染与页面运行错误。截图、打印预览和 acceptance.json 在 `artifacts/report-acceptance/final-display/`。这是本轮成品检查，不是新增付费调研。
 
-## 网页自动分析接续
+## 真实自动写作
 
-新增 Codex / Claude Code / CodeBuddy 三种 CLI 协议适配，WorkBuddy 的自动入口对应可调用的 CodeBuddy CLI，不假设桌面端登录必然等于 CLI 登录。自动执行器沿用自己的登录位置，不传入 TikHub Key，也不读取其他客户端的凭据。
+`artifacts/report-acceptance/skill-generated-final/acceptance.json` 记录本机 Codex CLI 对既有 Skill 调研缓存的实际自动写作：
 
-本次验证包含：真实子进程协议的合成替身、无原宿主接单时完成分析、付费查询前握手失败保护、取消与超时、无工具配置、Windows npm 启动包装解析及命令长度、缺正文不伪报完成、核验中断和写作中断后复用缓存续跑且账本不变。浏览器通过真实按钮测试三个适配器的开始、阶段稿、续跑与报告更新。Windows 解析在本机离线构造测试，不等于 Windows 实机验收。
+- 一次模型输出通过校验；正文精选 2 条作品、归纳 2 个方法；其余 1 条充分核验的合格作品放入“更多小号爆款”。
+- 3 张原封面取得并内嵌；数值、日期、原视频和主页链接均由程序从既有记录生成。
+- 写作约 64.08 秒，连同封面处理与渲染约 64.37 秒。
+- TikHub 请求账本前后摘要一致，新增 TikHub 付费查询为 0；分析使用当前 Codex 额度。
 
-本机 CLI 帮助已核对：Codex 0.160.1、Claude Code 2.1.287；CodeBuddy 参数依据官方文档，未在本机安装。没有调用真实模型或 TikHub 付费 API，没有完成 Claude 订阅、WorkBuddy 桌面、CodeBuddy 登录态的实机端到端验收。
+这个耗时不包含重新搜索、相关性判断和播放核验，不能对外宣传为一轮新调研只需 64 秒。后续新调研会在 timings.json 分阶段记录准备、搜索、复核、核验、补搜、写作和成品生成耗时。
+
+## 独立审查
+
+跨模块代码已独立审查。作者旧页失败误伤已有充分历史、保存失败后继续发送队列、正文结尾/迁移例子夹带虚构统计三项阻塞已修复；独立纯内存定向复核 **4 项通过、0 失败**。没有把格式和已知禁写语句校验当作通用事实核查，自动报告仍需阅读质量验收。
+
+## 尚未验证
+
+- 未用新主题重新发起 TikHub 付费搜索，尚无本版完整新调研的速度实测。
+- Claude Code、WorkBuddy/CodeBuddy 的本轮证据是本机协议模拟，未验证各自真实账户下的完整会话。
+- Windows 启动包装与参数解析是离线构造测试，不等于 Windows 实机验收。
+- 尚未在其他用户电脑上验收 GitHub 获取和启动全过程；不宣称所有客户端、模型或系统均已实测。
 
 接口依据：[Codex 非交互模式](https://developers.openai.com/codex/noninteractive)、[Claude Code 程序化运行](https://code.claude.com/docs/en/headless)、[CodeBuddy 无头模式](https://www.workbuddy.cn/docs/cli/headless)、[CodeBuddy 参数](https://www.workbuddy.cn/docs/cli/cli-reference)。
 
-本次本机结果（当前工作区）：`test_analyst.py` 15 项、`test_research.py` 16 项、`test_product.py` 20 项，合计 51 项通过、0 失败；`browser_auto.py` 3 项、`browser_e2e.py` 11 项，合计 14 项通过、0 失败。上述命令、`node --check assets/wizard.js`、TypeScript 5.7.3 `tsc -p tsconfig.json` 均退出 0。未重复运行未变更核心模块的全量测试，未发布或触发远程 CI。
+## 后续：移除完成后的中间页
+
+完成状态在同一标签直接打开报告；在线报告顶部返回“新研究”。输入页刷新不会再次跳回旧报告，未完成状态仍显示进度和续跑。报告文件本身不带本地服务导航，保持离线可用。
+
+本次定向验证：`test_product.py` 20 项，`browser_e2e.py` 13 项，`browser_auto.py` 3 项，均退出 0、0 失败；JavaScript 类型检查、语法检查与差异检查退出 0。浏览器证据保存于 `artifacts/navigation-acceptance/`，全部使用合成数据，无真实付费查询。此前业务计算与并发模块未变更，不重复验证。
+
+原本地验收链接额外通过 3 项真实缓存检查（直接进入报告、新研究刷新保留输入页、请求账本不变），退出 0。导航增量独立只读审查未发现阻塞问题。
+
+## 后续：写法对照与搜索覆盖
+
+用户确认后，用同一份现有报告、同一模型 gpt-6.1-sol（CLI报告 reasoning effort 为 none）完成4次真实改写：ASD-STE100 清晰表达原则的中文适配2次，ra-人话 固定版本2次。每次生成均退出0、结构与引用检查通过；没有择优重跑或手工润色。原始提示、结果、模型信息、耗时及来源摘要在 `artifacts/writing-comparison/`，对照页为该目录下的 index.html。
+
+ASD 官方原文直接请求返回403，依据官方检索摘录借用清晰表达原则；未完整检验英文词表、英文词数等要求。这次没有测试仅添加一句标准名称的简短提示。ra-人话 来源版本为 `83d1783b892bbaa29a137895ff8338264b6872fa`，只读取文字，没有安装或执行外部脚本。两组方法说明长度不同，比较的是这两种实际用法，不单独归因于某条规则。助手逐段比较建议优先 ra-人话，但两组仍有未解释的抽象说法；未做真实读者测试，正式写作规则没有替换。
+
+搜索代码取消“3条合格即停止补搜”，默认候选核验上限从8提高到50；先核验已有小号，再按每页新增情况决定翻页或换同主题词，最多补搜两轮。补搜给核验留额度，作者历史按小批获取，并根据剩余额度缩小尾段批次。原向导50次请求/0.50美元预留上限及粉丝、倍数、样本标准均未提高或放宽。
+
+新增 `test_coverage.py` 12项，覆盖第9/10条候选继续处理、3条合格后仍补搜、重复和大号页面停止翻页、费用头寸、过新作品不占核验位、身份/渠道/缓存统计变化使旧结果失效等。模拟30个不同作者的场景，在50次请求内得到7条合格；模拟已有对照统计的场景，10条候选均能核验。两项仅用于证明机制，不代表真实搜索命中率。
+
+本轮命令与结果：
+
+- `PYTHONPATH=scripts:tests python3 -m unittest test_coverage test_parallel test_skill test_research test_analyst test_product test_selection_report -q`：当时123项通过、0失败，退出0。
+- 最终缓存与渠道边界修正、增加1项测试后，`PYTHONPATH=scripts:tests python3 -m unittest test_coverage test_parallel test_skill -q`：53项通过、0失败，退出0；其余未变更检查不重复。当前模块用例总数124。
+- `browser_auto.py`：3项通过；`browser_e2e.py`：13项通过；对照页显示：9项通过。均退出0、0失败。
+- 独立审查发现的目标引用复用问题已修复；身份、统计、低余额及50次边界定向复核4项通过、退出0，最终小增量只读复核无剩余阻塞。
+- `git diff --check` 退出0。前端向导代码未变更，沿用本轮已通过的类型检查。对照页已做桌面、390px、切换和报告链接验证。
+
+以上均无新增 TikHub 付费查询；真实新主题命中率与完整耗时仍待用户从页面开始一轮研究后测量。未提交、推送、发版或运行远程CI。
+
+## 用户否定两组改写后的调整
+
+用户判定 ASD 与 ra-人话 都不如原始样稿，本轮已撤回实验推荐，不接入两种改写方法。报告继续使用原始样稿，允许在相同案例、相同证据下沿用准确原句；不同案例仍须引用本轮证据。调整篇幅指引为通常2–4短段，允许一到两段引言，并保留生活场景的迁移例子。既有统计、引用、资格与正文证据校验没有放宽。
+
+`python3 -m unittest discover -s tests -p test_selection_report.py -q`：20项通过、0失败，退出0；`git diff --check`退出0。实际自动生成使用现有Skill缓存，一次输出通过校验，约58秒，2条正文案例、3条合格作品；没有新增TikHub查询，原请求账本保持一致。产物和提示材料保存在 `artifacts/approved-sample-check/generated/`。用户随后确认“可以的”，本份报告口吻验收通过；其他新主题的实际效果仍需完整调研验证。
+
+## 尚未完成的体验项
+
+用户早先提出的“自动记住 TikHub Key、下次免填”尚未实现。目前 Key 仅保存在本轮进程内存，研究结束后清除。持久保存位置及“忘记 Key”的方案尚待确认，不得把已完成的隐私说明当作已实现自动保存。
+
+## 交付准备检查
+
+当前工作区已复制到一个新的临时源码目录，副本不包含运行报告、缓存和私密文件。使用 `python3 -S` 禁用第三方 site-packages 后，免费示例可以生成当前选题报告，本地页面能独立启动且资源齐全；缺少分析助手时在收费查询前停止。`artifacts/delivery-acceptance/check_fresh_source.py` 4项通过、0失败，退出0，源文件摘要另存于同目录。该检查是本机全新源码副本，不能描述成另一台电脑实测。
+
+本机分析入口就绪检查：Codex 可用；Claude Code 已安装但未通过订阅登录方式检查；CodeBuddy 未安装。因此本轮无法在本机声称后两种客户端的真实账户闭环已通过。
+
+README 已移除不存在的 PDF 手册链接，并纠正“缺少视频正文只能生成阶段稿”的过时说明。本地文档链接检查与源码语法解析通过；未修改现有 CI 配置。

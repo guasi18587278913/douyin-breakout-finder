@@ -15,6 +15,10 @@ def refs(video_ids,candidates,demo):
 
 def narrative(store):
     state=report_state(store);s=store.state;c=store.config;story=state['story'];demo=s.get('demo',False)
+    from selection_report import FORMAT
+    if story and story.get('format') == FORMAT:
+        from selection_render import render_selection
+        return render_selection(store, story)
     selected=[r for r in s['results'].values() if r['status'] in ('qualified','limited')]
     suitable=sum(v.get('followers') is not None and v['followers']<=c['max_followers'] for v in s['candidates'].values())
     headline=story['headline'] if story else c['topic']+'：研究正在进行'
@@ -53,7 +57,7 @@ def narrative(store):
                 out+='<div><h3>内容如何展开</h3><p>'+E(case['opening'])+'</p><ol>'+''.join('<li>'+E(x)+'</li>' for x in case['outline'])+'</ol></div>'
             else:out+='<div><h3>正文证据待补</h3><p>目前只读取标题/描述，尚不能判断真实口播开场和叙事结构。</p></div>'
             out+='<div><h3>可以参考什么</h3><p>'+E(case['takeaway'])+'</p></div></div>'
-            out+='<div class="case-numbers">'+''.join('<div><b>'+E(value)+'</b><span>'+label+'</span></div>' for value,label in [(num(r.get('play_count')),'目标播放'),(num(r.get('median_plays')),'对照中位数'),((num(r['ratio'])+'×') if r.get('ratio') is not None else '未核验','相对倍数')])+'</div>'
+            out+='<div class="case-numbers">'+''.join('<div><b>'+E(value)+'</b><span>'+label+'</span></div>' for value,label in [(num(r.get('play_count')),'目标播放'),(num(r.get('median_plays')),'账号正常播放量'),((num(r['ratio'])+'×') if r.get('ratio') is not None else '未核验','相对倍数')])+'</div>'
             if r.get('baseline'):
                 out+='<details><summary>查看 '+str(len(r['baseline']))+' 条同作者对照</summary><div class="scroll"><table><tr><th>作品</th><th>发布时间</th><th>播放量</th></tr>'
                 for b in r['baseline']:

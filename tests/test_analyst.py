@@ -127,13 +127,15 @@ class AdapterContract(unittest.TestCase):
                 self.assertIsNone(s.key)
                 self.assertIn('自动生成的离线合成报告', (s.run_dir / 'report.html').read_text())
 
-    def test_title_only_analysis_stays_partial(self):
+    def test_title_only_selection_analysis_finishes_without_claiming_video_body(self):
         with tempfile.TemporaryDirectory() as temp, offline_analyst(), offline_data(with_body=False):
             s = Session(temp, assistant_mode='codex', bridge_timeout=5)
             s.mode, s.key = 'live', 'SYNTHETIC'
             s.start({'description': 'FDE', 'consent': True}); s.worker.join(10)
-            self.assertEqual(s.status, 'needs_analysis', s.message)
-            self.assertFalse(s.summary['report_complete'])
+            self.assertEqual(s.status, 'done', s.message)
+            self.assertTrue(s.summary['report_complete'])
+            self.assertEqual(s.summary['report_format'], 'selection-report-v1')
+            self.assertIn('依据标题与简介', (s.run_dir / 'report.html').read_text())
             self.assertFalse(s.snapshot()['can_resume'])
             with self.assertRaises(StopRun):
                 s.resume_analysis()

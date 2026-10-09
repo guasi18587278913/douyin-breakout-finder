@@ -57,15 +57,20 @@ def render(store):
     estimated = store.reserved_cost()
     failures = [e for e in store.events if e['event'] == 'failed']
     research=report_state(store)
+    from selection_report import FORMAT, eligible_ids
+    editorial = bool(research['story'] and research['story'].get('format') == FORMAT)
+    eligible = eligible_ids(store) if editorial else set()
     summary = {
+        'report_format':FORMAT if editorial else 'research-v1',
+        'featured_count':len(research['story'].get('cases', {})) if editorial else 0,
         'research_status':research['status'], 'report_complete':research['status']=='complete',
         'review_pending_count':research['review_pending_count'],
         'generated_at': now(), 'as_of': s['as_of'], 'demo': demo, 'topic': c['topic'],
         'scope': c['scope'], 'criteria': {k: c[k] for k in (
             'max_followers', 'min_ratio', 'baseline_count', 'min_baseline_count',
             'comparison_window_days', 'min_age_days', 'search_days')},
-        'candidate_count': len(s['candidates']), 'selected_count': len(selected),
-        'qualified_count': sum(r['status'] == 'qualified' for r in results),
+        'candidate_count': len(s['candidates']), 'selected_count': len(eligible) if editorial else len(selected),
+        'qualified_count': len(eligible) if editorial else sum(r['status'] == 'qualified' for r in results),
         'limited_count': sum(r['status'] == 'limited' for r in results),
         'pending_count': sum(r['status'] == 'pending' for r in results),
         'request_attempts': len(reservations), 'failed_attempts': len(failures),
@@ -74,11 +79,11 @@ def render(store):
             '这是按配置单价为所有尝试预留的金额，不是已核实账单；失败请求也保守计入。实际以 TikHub 账单为准。',
         'keyword_quality': metrics, 'stops': s['stops'],
     }
-    atomic_json(store.root / 'summary.json', summary)
     atomic_json(store.root / 'results.json', results)
     atomic_json(store.root / 'keyword-quality.json', metrics)
     rows, base_rows = [], []
     for r in results:
+        if editorial and r['target']['id'] not in eligible: continue
         t = r['target']
         rows.append([LABELS[r['status']], t['title'], t['author_name'], t.get('followers'),
                      date_text(t['published_at']), r.get('play_count'), r.get('median_plays'),
@@ -89,15 +94,18 @@ def render(store):
                               s['stats'].get(b['id'], {}).get('play_count'),
                               '' if demo else 'https://www.douyin.com/video/' + b['id']])
     write_csv(store.root / 'results.csv', ['状态','标题','作者','采集时粉丝','发布日期(北京时间)',
-              '播放量','对照中位数','倍数','对照数量','说明','原视频'], rows)
+              '播放量','账号正常播放量','倍数','对照数量','说明','原视频'], rows)
     write_csv(store.root / 'comparisons.csv', ['目标标题','作者','对照作品','对照日期','对照播放量','对照链接'], base_rows)
+    if editorial:
+        selected = [r for r in selected if r['target']['id'] in eligible]
     table = ''
     cards = ''
     for r in selected:
         t = r['target']; vid = t['id']; bs = r['baseline']
         ratio = fmt(r['ratio']) + '×'
-        table += '<tr><td><a href="#v-%s">%s</a><small>%s · %s 粉丝</small></td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td>%s / %s 条</td></tr>' % (
-            E(vid), E(t['title']), E(t['author_name']), fmt(t.get('followers')), fmt(r.get('play_count')),
+        table_href = ('#case-' + vid) if research['story'] and vid in research['story'].get('cases', {}) else ('#data-results' if demo else 'https://www.douyin.com/video/' + vid)
+        table += '<tr><td><a href="%s">%s</a><small>%s · %s 粉丝</small></td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td>%s / %s 条</td></tr>' % (
+            E(table_href), E(t['title']), E(t['author_name']), fmt(t.get('followers')), fmt(r.get('play_count')),
             fmt(r.get('median_plays')), ratio, LABELS[r['status']], len(bs))
         bases = ''.join('<tr><td>%s</td><td>%s</td><td class="num">%s</td></tr>' % (
             date_text(b['published_at']), video_link(b, demo), fmt(s['stats'].get(b['id'], {}).get('play_count')))
@@ -114,40 +122,44 @@ def render(store):
         if comments:
             comment_html = '<details><summary>评论样本（%s 条）</summary><p class="muted">%s</p><ul>%s</ul></details>' % (
                 len(comments['items']), E(comments['sample_note']), ''.join('<li>%s</li>' % E(x['text']) for x in comments['items']))
-        cards += '<article id="v-%s"><h2>%s</h2><p>%s · %s 发布 · %s</p><p>目标播放 <b>%s</b>，%s 条对照中位数 <b>%s</b>，倍数 <b>%s</b>。</p><p class="muted">相关性初审：%s</p>%s<details><summary>查看逐条对照</summary><div class="scroll"><table><tr><th>日期</th><th>同作者作品</th><th>播放量</th></tr>%s</table></div></details>%s</article>' % (
+        cards += '<article id="v-%s"><h2>%s</h2><p>%s · %s 发布 · %s</p><p>目标播放 <b>%s</b>，%s 条账号正常播放量 <b>%s</b>，倍数 <b>%s</b>。</p><p class="muted">相关性初审：%s</p>%s<details><summary>查看逐条对照</summary><div class="scroll"><table><tr><th>日期</th><th>同作者作品</th><th>播放量</th></tr>%s</table></div></details>%s</article>' % (
             E(vid), video_link(t,demo), E(t['author_name']),date_text(t['published_at']),LABELS[r['status']],
             fmt(r['play_count']),len(bs),fmt(r['median_plays']),ratio,E(t['review']['reason']),analysis,bases,comment_html)
     if not table:
-        table = '<tr><td colspan="5">本轮暂无入选条目。请查看相关性审查、待核验原因和预算记录。</td></tr>'
+        table = '<tr><td colspan="5">本轮没有足够的合格作品。</td></tr>' if editorial else '<tr><td colspan="5">本轮暂无入选条目。请查看相关性审查、待核验原因和预算记录。</td></tr>'
     other = ''.join('<tr><td>%s<small>%s</small></td><td>%s</td><td>%s</td></tr>' % (
         video_link(r['target'],demo),E(r['target']['author_name']),LABELS[r['status']],E(r['reason']))
-        for r in results if r['status'] not in ('qualified','limited'))
+        for r in results if r['status'] not in ('qualified','limited') and (not editorial or r['status'] not in ('pending',)))
     quality = ''.join('<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>' % (
         E(q['keyword']),q['returned_unique'],q['reviewed'],
         ('%.0f%%' % (q['relevance_rate']*100)) if q['relevance_rate'] is not None else '未审',
         q['first_discovered'],q['verified_outliers']) for q in metrics)
     css = (Path(__file__).resolve().parent.parent / 'assets' / 'report.css').read_text(encoding='utf-8')
+    if editorial:
+        css += (Path(__file__).resolve().parents[1] / 'assets/selection-report.css').read_text(encoding='utf-8')
     banner = '<div class="notice demo"><b>离线演示：全部为合成数据。</b>未联网，未读取密钥，没有真实 API 费用。示例链接不指向真实抖音视频。</div>' if demo else ''
-    content = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>''' + E(c['topic']) + ''' · 小号爆款报告</title><style>''' + css + '''</style></head><body><main>''' + banner
+    content = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>''' + E(research['story']['headline'] if editorial else c['topic']) + ''' · 小号爆款报告</title><style>''' + css + '''</style></head><body''' + (' class="report-editorial"' if editorial else '') + '''><main>''' + banner
     content += narrative(store)
     content += '<details class="data-appendix"><summary>查看统计明细、筛选口径与费用记录</summary>'
-    content += '<div class="notice">筛选口径：粉丝不超过 %s；目标播放量至少为对照中位数的 %s 倍。对照目标 %s 条，至少 %s 条；少于目标数量单独标注。</div>' % (
+    content += '<div class="notice">筛选口径：粉丝不超过 %s；目标播放量至少为账号正常播放量的 %s 倍。对照目标 %s 条，至少 %s 条；少于目标数量单独标注。</div>' % (
         c['max_followers'],c['min_ratio'],c['baseline_count'],c['min_baseline_count'])
-    if any(v.get('review', {}).get('method') == 'keyword-rule' for v in s['candidates'].values()):
+    if not editorial and any(v.get('review', {}).get('method') == 'keyword-rule' for v in s['candidates'].values()):
         content += '<div class="notice">本报告使用标题/描述关键词初筛。“已核验”仅表示播放对照达标；内容语义仍待复核，请先复看原视频。</div>'
     content += '<p><a href="results.csv" download>结果 CSV</a> · <a href="comparisons.csv" download>对照 CSV</a> · <a href="results.json">可复算 JSON</a></p>'
     if research['story'] and not s['analyses']: cards=''
-    content += '<div class="scroll"><table><tr><th>内容 / 作者</th><th>播放量</th><th>对照中位数</th><th>倍数</th><th>状态</th></tr>' + table + '</table></div>' + cards
-    content += '<h2>其他已处理候选</h2><div class="scroll"><table><tr><th>视频</th><th>状态</th><th>原因</th></tr>' + (other or '<tr><td colspan="3">无</td></tr>') + '</table></div>'
-    content += '<h2>关键词结果</h2><div class="scroll"><table><tr><th>关键词</th><th>去重结果</th><th>初筛数量</th><th>初筛纳入率</th><th>首次引入</th><th>入选数量</th></tr>' + quality + '</table></div><p class="muted">相关性可能来自词规则、宿主 AI 或使用者；请查看逐条初审理由。首次引入数量受查询先后影响。搜索按点赞排序，不代表全平台最高播放榜。</p>'
+    content += '<div class="scroll" id="data-results"><table><tr><th>内容 / 作者</th><th>播放量</th><th>账号正常播放量</th><th>倍数</th><th>状态</th></tr>' + table + '</table></div>' + cards
+    if not editorial: content += '<h2>其他已处理候选</h2><div class="scroll"><table><tr><th>视频</th><th>状态</th><th>原因</th></tr>' + (other or '<tr><td colspan="3">无</td></tr>') + '</table></div>'
+    if not editorial: content += '<h2>关键词结果</h2><div class="scroll"><table><tr><th>关键词</th><th>去重结果</th><th>初筛数量</th><th>初筛纳入率</th><th>首次引入</th><th>入选数量</th></tr>' + quality + '</table></div><p class="muted">相关性可能来自词规则、宿主 AI 或使用者；请查看逐条初审理由。首次引入数量受查询先后影响。搜索按点赞排序，不代表全平台最高播放榜。</p>'
     content += '<h2>预算与数据边界</h2><p>已记录 %s 次请求尝试。按配置单价预留 <b>%s USD</b>，本轮预算 %s USD。</p><p>%s</p>' % (
         len(reservations),E(str(estimated)),E(str(c['budget_usd'])),E(summary['billing_note']))
-    content += '<p class="muted">当前粉丝数不代表发布时规模；累计播放没有对齐相同发布后时长；未核实投流。对照为同作者邻近作品，不保证同题材。数据缺失、历史覆盖不足和中位数为零的记录不列为已核验结果。</p>'
-    if s['stops']:
+    content += '<p class="muted">当前粉丝数不代表发布时规模；累计播放没有对齐相同发布后时长；未核实投流。对照为同作者邻近作品，不保证同题材。数据缺失、历史覆盖不足和账号正常播放量为零的记录不列为已核验结果。</p>'
+    if s['stops'] and not editorial:
         content += '<details><summary>运行中的停止原因</summary><ul>' + ''.join('<li>%s：%s</li>' % (E(x['phase']),E(x['message'])) for x in s['stops']) + '</ul></details>'
     content += '</details>'
-    content += '<p><a href="summary.json">方法与预算记录</a> · <a href="candidates.json">候选与相关性审查</a></p><footer>报告只保存公开研究字段。密钥不写入配置、缓存或分享包。对外分享运行目录前，请自行检查主题、评论和内容笔记是否适合公开。</footer></main></body></html>'
+    content += ('' if editorial else '<p><a href="summary.json">方法与预算记录</a> · <a href="candidates.json">候选与相关性审查</a></p>') + '<footer>报告只保存公开研究字段。密钥不写入配置、缓存或分享包。对外分享运行目录前，请自行检查主题、评论和内容笔记是否适合公开。</footer></main></body></html>'
     temp = store.root / 'report.html.tmp'
     temp.write_text(content,encoding='utf-8')
     temp.replace(store.root / 'report.html')
+    # Publish readiness only after all user-facing files were successfully written.
+    atomic_json(store.root / 'summary.json', summary)
     return summary

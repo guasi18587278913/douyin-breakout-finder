@@ -15,9 +15,11 @@ from core import Store, StopRun, atomic_json, now, read_json
 from bridge import FileBridge, AssistanceNeeded
 from analyst import LocalAnalyst, MODES
 from research import review_packet, accept_review, analysis_packet, accept_research, report_state
+from selection_report import FORMAT
+from cover_cache import cache_covers
 from product import intake, config_for, review_by_rules, evidence_notes, fetch_prices, simple_brief
 from tikhub import TikHubClient
-from workflow import search, verify, write_inbox, CachedClient
+from workflow import search, verify, write_inbox, CachedClient, search_extensions, MAX_SEARCH_ROUNDS
 from report import render
 from demo import run_demo
 
@@ -43,6 +45,7 @@ class Session:
         self.last_active = time.monotonic()
         self.cancelled = threading.Event()
         self.worker = None
+        self.timings = []
         self.bridge = FileBridge(bridge_dir,self.cancelled,bridge_timeout) if bridge_dir else None
         self.automatic = LocalAnalyst(self.cancelled, assistant_mode, bridge_timeout, ROOT) if assistant_mode != 'host' else None
         self.assistant = None
@@ -105,6 +108,7 @@ class Session:
             self.run_dir = self.data_dir / ('run-' + time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(4))
             self.summary = None
             self.analysis_interrupted = False
+            self.timings = []
             if self.bridge and not self.automatic: atomic_json(self.bridge.folder/'status.json',{'terminal':False})
             self.cancelled.clear()
             self.status, self.message = 'running', '正在准备本轮研究…'
@@ -125,12 +129,27 @@ class Session:
             self.worker = threading.Thread(target=self.run, args=(None, True), daemon=True)
             self.worker.start()
 
+    def timed(self, stage, action):
+        start = time.monotonic()
+        outcome = 'failed'
+        try:
+            result = action()
+            outcome = 'done'
+            return result
+        finally:
+            self.timings.append({'stage':stage,'seconds':round(time.monotonic()-start,3),'status':outcome,'at':now()})
+            if self.run_dir and self.run_dir.is_dir():
+                try:
+                    atomic_json(self.run_dir/'timings.json', {'stages':self.timings})
+                except OSError:
+                    pass
+
     def run(self, config, resume=False):
         store = None
         try:
             if self.mode == 'demo':
                 self.message = '正在用合成的 FDE 数据走完整流程；不会联网。'
-                store, _ = run_demo(self.run_dir)
+                store, _ = run_demo(self.run_dir, selection=True)
                 summary = render(store)
             else:
                 if resume:
@@ -140,8 +159,13 @@ class Session:
                 def ready(answer):
                     if not isinstance(answer,dict) or answer.get('ready') is not True:
                         raise StopRun('智能体需确认已接入当前研究。')
-                    return True
-                self.assistant.ask('prepare-research',{'run_dir':str(self.run_dir),'topic':config['topic'],'budget_usd':config['budget_usd'],'max_requests':config['max_requests']},ready)
+                    words = answer.get('search_keywords', [] if resume else config['keywords'])
+                    if not isinstance(words, list) or (not resume and not 1 <= len(words) <= 3) or any(not isinstance(w,str) or not w.strip() or len(w)>80 for w in words):
+                        raise StopRun('首轮搜索词需要1至3个同主题短词。')
+                    return list(dict.fromkeys(w.strip() for w in words))
+                planned = self.timed('prepare', lambda:self.assistant.ask('prepare-research',{'run_dir':str(self.run_dir),'topic':config['topic'],'scope':config['scope'],'initial_keywords':config['keywords'],'resume':resume,'budget_usd':config['budget_usd'],'max_requests':config['max_requests']},ready))
+                if not resume:
+                    config['keywords'] = planned
                 if not resume:
                     store = Store.create(self.run_dir, config)
                 with store.lock():
@@ -150,13 +174,13 @@ class Session:
                     else:
                         client = CancellableClient(TikHubClient(store, allow_paid=True, api_key=self.key), self.cancelled)
                         self.message = '正在搜索本轮候选…'
-                        search(store, client, page_limit=1)
+                        self.timed('search', lambda:search(store, client, page_limit=1))
                         review_by_rules(store, self.answers)
                         write_inbox(store)
                         self.summary = render(store)
                     pending = any(v['review']['decision'] in ('pending','unsure') or v['review'].get('method')=='keyword-rule'
                                   for v in store.state['candidates'].values())
-                    rounds = [2] if resume and pending else [] if resume else range(3)
+                    rounds = [MAX_SEARCH_ROUNDS - 1] if resume and pending else [] if resume else range(MAX_SEARCH_ROUNDS)
                     for round_number in rounds:
                         self.message = '智能体正在复核内容相关性，并判断是否需要补搜…'
                         packet = review_packet(store,round_number)
@@ -166,25 +190,32 @@ class Session:
                             if resume and isinstance(answer,dict) and answer.get('next_keywords'):
                                 raise StopRun('接续分析只使用已有数据，不能补搜。')
                             return accept_review(store,answer)
-                        response=self.assistant.ask('semantic-review',packet,accept)
-                        if not response['next_keywords'] or round_number==2:break
+                        response=self.timed('review', lambda:self.assistant.ask('semantic-review',packet,accept))
+                        if any(v['review']['decision']=='include' for v in store.state['candidates'].values()):
+                            self.message = '正在同时核对几位作者的作品和播放量…'
+                            self.timed('verify', lambda:verify(store, client))
+                        if resume or round_number == MAX_SEARCH_ROUNDS - 1:break
+                        next_words = search_extensions(store, response['next_keywords'])
+                        if not next_words:break
                         self.message = '按智能体的研究判断补充候选，仍使用本轮原有额度…'
-                        search(store,client,response['next_keywords'],response['search_reason'],page_limit=1)
+                        self.timed('supplement', lambda:search(store,client,next_words,response['search_reason'] or '继续查找产生相关小号的关键词，按剩余额度核验。',page_limit=1))
                         review_by_rules(store,self.answers)
                         write_inbox(store)
                         self.summary=render(store)
-                    if any(v['review']['decision']=='include' for v in store.state['candidates'].values()):
-                        self.message = '正在核对同作者邻近作品和播放量…'
+                    if resume and not rounds and any(v['review']['decision']=='include' for v in store.state['candidates'].values()):
+                        self.message = '正在用已有数据恢复报告…'
                         verify(store, client)
                     write_inbox(store)
                     self.summary=render(store)
-                    self.message = '智能体正在阅读内容证据、整理主题发现和逐条案例…'
-                    self.assistant.ask('content-analysis',analysis_packet(store),lambda answer:accept_research(store,answer))
-                    summary = render(store)
+                    self.message = '正在整理值得借鉴的做法和具体案例…'
+                    self.timed('write', lambda:self.assistant.ask('content-analysis',analysis_packet(store),lambda answer:accept_research(store,answer,expected_format=FORMAT)))
+                    self.message = '正在整理原作品封面和图文报告…'
+                    self.timed('covers', lambda:cache_covers(store))
+                    summary = self.timed('render', lambda:render(store))
             with self.lock:
                 self.summary = summary
                 self.status = 'done' if summary.get('report_complete') else 'needs_analysis'
-                self.message = '研究报告已生成。' if summary.get('report_complete') else '已保存阶段报告；仍有内容证据或相关性判断待补充，尚未完成完整研究。'
+                self.message = ('选题解读报告已生成。' if summary.get('report_format') == FORMAT else '研究报告已生成。') if summary.get('report_complete') else '已保存阶段报告；仍有内容证据或相关性判断待补充，尚未完成完整研究。'
         except Exception as error:
             # Do not serialize exception bodies from providers or keys.
             message = str(error) if isinstance(error, StopRun) else '本轮未能完成，请保留运行目录并联系维护者。'
@@ -264,7 +295,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
         public = {'/': ('wizard.html', 'text/html; charset=utf-8'),
-                  '/wizard.css': ('wizard.css', 'text/css'), '/wizard.js': ('wizard.js', 'text/javascript')}
+                  '/wizard.css': ('wizard.css', 'text/css'), '/wizard.js': ('wizard.js', 'text/javascript'),
+                  '/journal.css': ('journal.css', 'text/css'),
+                  '/journal-background.webp': ('journal-background.webp', 'image/webp'),
+                  '/journal-title.woff2': ('journal-title.woff2', 'font/woff2')}
         if path in public:
             if self.guard(auth=False):
                 name, kind = public[path]
@@ -276,7 +310,16 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, self.session.snapshot())
         elif path.startswith('/report/') and path[len('/report/'):] in EXPORTS and self.session.summary:
             name = path[len('/report/'):]
-            self.reply(200, (self.session.run_dir / name).read_bytes(), EXPORTS[name])
+            body = (self.session.run_dir / name).read_bytes()
+            if name == 'report.html':
+                # Navigation belongs to the live app; standalone reports remain portable.
+                navigation = ('<style>.report-nav{display:flex;justify-content:flex-end;margin-bottom:20px}'
+                              '.report-nav a{padding:8px 0;font-size:14px}'
+                              '@media print{.report-nav{display:none}}</style>'
+                              '<nav class="report-nav" aria-label="报告导航">'
+                              '<a id="new-research-link" href="/?new=1">新研究 ↗</a></nav>')
+                body = body.replace(b'<main>', b'<main>' + navigation.encode('utf-8'), 1)
+            self.reply(200, body, EXPORTS[name])
         else:
             self.reply(404, {'error': '未找到页面。'})
 
@@ -355,6 +398,9 @@ class Handler(BaseHTTPRequestHandler):
 class CancellableClient:
     def __init__(self, client, cancelled):
         self.client, self.cancelled = client, cancelled
+        self.parallel_safe = getattr(client, 'parallel_safe', False)
+        if self.parallel_safe:
+            client.cancel_event = cancelled
 
     def call(self, *args, **kwargs):
         if self.cancelled.is_set():

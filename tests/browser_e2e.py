@@ -26,30 +26,32 @@ try:
   assert server.session.status=='ready' and server.session.run_dir is None
   checks.append('missing key opens dialog without a paid request or budget form')
   page.locator('#close-dialog').click()
-  page.get_by_role('button',name='体验示例',exact=True).click()
-  expect(page.locator('#report-link')).to_be_visible(timeout=15000)
-  page.screenshot(path=str(out/'04-complete.png'),full_page=True)
-  expect(page.locator('#demo-banner')).to_be_visible()
-  checks.append('one-click free demo generates report and result cards')
-  with page.expect_popup() as popup:page.locator('#report-link').click()
-  report=popup.value;report.wait_for_load_state()
+  server.session.mode='demo';server.session.start({'description':'FDE'})
+  page.reload()
+  expect(page).to_have_url(base+'/report/report.html',timeout=15000)
+  report=page
+  checks.append('completed report opens directly in the same tab')
   expect(report.get_by_text('离线演示：全部为合成数据。',exact=True)).to_be_visible()
-  assert '内容如何展开' in report.locator('body').inner_text()
+  assert '这个思路怎么借鉴' in report.locator('body').inner_text()
+  assert '待核验' not in report.locator('body').inner_text()
   assert '合成' in report.locator('body').inner_text()
   report.screenshot(path=str(out/'05-report.png'),full_page=True)
   report.screenshot(path=str(out/'05-report-first-screen.png'))
   checks.append('report distinguishes evidence-only notes and synthetic data')
-  response=context.request.get(base+'/report/results.csv');assert response.status==200 and '对照中位数' in response.text()
+  response=context.request.get(base+'/report/results.csv');assert response.status==200 and '账号正常播放量' in response.text()
   checks.append('authenticated CSV export works')
   anonymous=browser.new_context();assert anonymous.request.get(base+'/api/state').status==401;anonymous.close()
   checks.append('private state requires session')
   mobile=browser.new_context(viewport={'width':390,'height':844},device_scale_factor=1)
-  phone=mobile.new_page();phone.goto(base+'/#'+server.session.token);expect(phone.locator('#report-link')).to_be_visible()
+  phone=mobile.new_page();phone.goto(base+'/#'+server.session.token);expect(phone).to_have_url(base+'/report/report.html')
   phone.screenshot(path=str(out/'06-mobile-result.png'),full_page=True)
   assert phone.evaluate('document.documentElement.scrollWidth <= innerWidth+1')
-  phone.locator('#new-research').click();phone.screenshot(path=str(out/'07-mobile-home.png'),full_page=True)
+  phone.locator('#new-research-link').click();expect(phone.locator('#description')).to_be_visible();phone.screenshot(path=str(out/'07-mobile-home.png'),full_page=True)
   assert phone.evaluate('document.documentElement.scrollWidth <= innerWidth+1')
-  checks.append('390px home and result have no horizontal overflow')
+  checks.append('390px home and report have no horizontal overflow')
+  phone.reload();expect(phone.locator('#description')).to_be_visible()
+  assert mobile.request.get(base+'/api/state').json()['status']=='done'
+  checks.append('new research remains on the input page after reload without starting queries')
   state=context.request.get(base+'/api/state').json()
   assert state['status']=='done' and state['summary']['demo'] is True
   assert state['summary']['qualified_count']==1 and state['summary']['pending_count']==1
@@ -59,24 +61,28 @@ try:
   from report import render
   import copy
   store=Store(server.session.run_dir)
-  full={key:copy.deepcopy(store.state['research'][key]) for key in ['headline','lead','findings','categories','cases','next_topics','limitations']}
-  partial=copy.deepcopy(full)
-  for vid,case in partial['cases'].items():case.update(evidence_ids=[vid+':title'],opening='',outline=[])
-  with store.lock():accept_research(store,partial);partial_summary=render(store)
+  full={key:copy.deepcopy(store.state['research'][key]) for key in ('format','topic_label','intro','lessons','closing','limitations')}
+  full['title']=store.state['research']['headline']
+  for lesson in full['lessons']:
+   for case in lesson['cases']:case.pop('basis',None)
+  with store.lock():store.state['research']=None;store.save();partial_summary=render(store)
   server.session.status='needs_analysis';server.session.summary=partial_summary
-  page.reload();expect(page.locator('#report-link-label')).to_have_text('查看阶段报告')
+  page.goto(base+'/');expect(page.locator('#report-link-label')).to_have_text('查看阶段报告')
+  checks.append('incomplete report stays on the progress page')
   with store.lock():accept_research(store,full);render(store)
-  expect(page.locator('#report-link-label')).to_have_text('打开完整研究报告',timeout=8000)
-  expect(page.locator('.highlight')).to_have_count(1)
-  checks.append('offline analysis completion updates the open page without duplicate cards')
-  page.locator('#connect').click();page.locator('#key').fill('SYNTHETIC-E2E-KEY-NOT-REAL');page.locator('#save-key').click()
+  expect(page).to_have_url(base+'/report/report.html',timeout=8000)
+  expect(page.locator('.selection-card')).to_have_count(1)
+  checks.append('offline analysis completion opens the report automatically')
+  page.locator('#new-research-link').click()
+  page.locator('#description').fill('FDE');page.locator('#start').click();page.locator('#start').click()
+  page.locator('#key').fill('SYNTHETIC-E2E-KEY-NOT-REAL');page.locator('#save-key').click()
   expect(page.locator('#key-dialog')).to_be_hidden()
   assert 'SYNTHETIC-E2E-KEY-NOT-REAL' not in context.request.get(base+'/api/state').text()
   for file in (out/'runs').rglob('*'):
    if file.is_file():assert b'SYNTHETIC-E2E-KEY-NOT-REAL' not in file.read_bytes()
   checks.append('key not exposed in state, reports or files')
   assert not errors,errors;checks.append('no JavaScript runtime errors')
-  page.locator('#quit').click();expect(page.locator('main')).to_contain_text('已请求停止')
+  response=context.request.post(base+'/api/quit',data={},headers={'X-Wizard':'1','Origin':base});assert response.status==200
   mobile.close();context.close();browser.close()
  (out/'acceptance.json').write_text(json.dumps({'source_commit':os.getenv('GITHUB_SHA','local'),
   'runner':platform.platform(),'python':platform.python_version(),'bundle':str(bundle),

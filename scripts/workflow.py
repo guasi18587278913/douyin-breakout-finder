@@ -1,8 +1,12 @@
 """Resumable search, semantic-review handoff and same-author comparisons."""
 import copy
 from collections import Counter
+from parallel_requests import call_many
+
+MAX_SEARCH_ROUNDS = 3
+VERIFY_BATCH_SIZE = 3
 from core import (APIError, BudgetStop, StopRun, DAY, atomic_json, digest, now,
-                  read_json, score, select_baseline, stamp, within_search, history_sufficient)
+                  read_json, score, select_baseline, stamp, within_search, history_sufficient, money)
 
 class CachedClient:
     def __init__(self, store):
@@ -23,7 +27,9 @@ def record_stop(store, phase, error):
 
 def search(store, client, keywords=None, reason=None, page_limit=None):
     c, s = store.config, store.state
-    keywords = keywords or c['keywords']
+    keywords = list(dict.fromkeys(keywords or c['keywords']))
+    if page_limit == 1 and len(keywords) > 1:
+        return search_batch(store, client, keywords, reason)
     if any(k not in c['keywords'] for k in keywords) and not reason:
         raise StopRun('Supply --reason when expanding beyond the original keywords.')
     for kw in keywords:
@@ -48,15 +54,18 @@ def search(store, client, keywords=None, reason=None, page_limit=None):
                 record_stop(store, 'search', e)
                 break
             q.pop('error', None)
+            q['last_new_ids'], q['last_page_ids'] = [], []
             for v in result['videos']:
                 if not within_search(v, c, stamp(s['as_of'])):
                     continue
                 vid = v['id']
+                if vid not in q['last_page_ids']: q['last_page_ids'].append(vid)
                 if vid not in q['ids']:
                     q['ids'].append(vid)
                 if vid not in s['candidates']:
                     s['candidates'][vid] = dict(v, queries=[], review={'decision': 'pending', 'reason': ''})
                     q['new_to_run'].append(vid)
+                    q['last_new_ids'].append(vid)
                 existing = s['candidates'][vid]
                 if kw not in existing['queries']:
                     existing['queries'].append(kw)
@@ -76,6 +85,99 @@ def search(store, client, keywords=None, reason=None, page_limit=None):
                 q['backtrace'] = result.get('backtrace') or ''
             store.save()
     write_inbox(store)
+
+def search_batch(store, client, keywords, reason=None):
+    c, s = store.config, store.state
+    if any(k not in c['keywords'] for k in keywords) and not reason:
+        raise StopRun('Supply --reason when expanding beyond the original keywords.')
+    queue = []
+    for kw in keywords:
+        if not isinstance(kw, str) or not kw.strip() or len(kw) > 200:
+            raise StopRun('Invalid keyword')
+        q = s['queries'].setdefault(kw, {'pages': 0, 'cursor': 0, 'search_id': '', 'backtrace': '',
+             'complete': False, 'seen_cursors': [], 'ids': [], 'new_to_run': [], 'reason': reason or 'initial seed'})
+        if q['complete'] or q['pages'] >= c['max_search_pages']:
+            continue
+        params = {'keyword': kw, 'cursor': q['cursor'], 'search_id': q['search_id'], 'backtrace': q['backtrace'],
+                  'sort_type': '1', 'publish_time': search_period(c['search_days']), 'filter_duration': '0', 'content_type': '1'}
+        queue.append((kw, q, params))
+    responses = call_many(client, [('search', params, {}) for _, _, params in queue])
+    fatal = None
+    for (kw, q, params), (result, error) in zip(queue, responses):
+        if error:
+            if isinstance(error, (APIError, BudgetStop)):
+                q['error'] = str(error); record_stop(store, 'search', error)
+            else:
+                fatal = fatal or error
+            continue
+        q.pop('error', None)
+        q['last_new_ids'], q['last_page_ids'] = [], []
+        for v in result['videos']:
+            if not within_search(v, c, stamp(s['as_of'])):
+                continue
+            vid = v['id']
+            if vid not in q['last_page_ids']: q['last_page_ids'].append(vid)
+            if vid not in q['ids']: q['ids'].append(vid)
+            if vid not in s['candidates']:
+                s['candidates'][vid] = dict(v, queries=[], review={'decision': 'pending', 'reason': ''})
+                q['new_to_run'].append(vid)
+                q['last_new_ids'].append(vid)
+            existing = s['candidates'][vid]
+            if kw not in existing['queries']: existing['queries'].append(kw)
+            existing.update({k: value for k, value in v.items() if value is not None})
+        q['pages'] += 1
+        old = q['cursor']; q['seen_cursors'].append(old)
+        nxt = result.get('cursor'); q['complete'] = not result['has_more']
+        if result['has_more'] and (nxt is None or nxt == old or nxt in q['seen_cursors']):
+            q['complete'] = True; q['warning'] = 'Repeated or missing cursor; stopped pagination.'
+        if not q['complete']:
+            q['cursor'] = nxt; q['search_id'] = result.get('search_id') or ''; q['backtrace'] = result.get('backtrace') or ''
+        store.save()
+    write_inbox(store)
+    if fatal: raise fatal
+
+
+def search_extensions(store, proposed, limit=2):
+    """Prefer productive pages and one new angle, leaving room to verify discoveries."""
+    c, state = store.config, store.state
+    prices = c['pricing']['usd_per_request']
+    remaining_requests = c['max_requests'] - len(store.reservations())
+    remaining_usd = money(c['budget_usd']) - store.reserved_cost()
+    stats_calls = (c['baseline_count'] + 2) // 2
+    # Leave space for author pagination plus one full set of comparison statistics.
+    reserve_requests = c['max_author_pages'] + stats_calls
+    reserve_usd = money(prices['posts']) * c['max_author_pages'] + money(prices['stats']) * stats_calls
+    as_of = stamp(state['as_of'])
+    pages = []
+    for keyword, query in state['queries'].items():
+        if query['complete'] or query.get('error') or query['pages'] >= c['max_search_pages']:
+            continue
+        fresh = query.get('last_new_ids', query['new_to_run'])
+        useful = [state['candidates'][vid] for vid in fresh
+                  if state['candidates'][vid]['review']['decision'] == 'include'
+                  and state['candidates'][vid].get('followers') is not None
+                  and state['candidates'][vid]['followers'] <= c['max_followers']
+                  and as_of - state['candidates'][vid]['published_at'] >= c['min_age_days'] * DAY]
+        if useful:
+            size = max(1, len(query.get('last_page_ids', query['ids'])))
+            pages.append((len(useful) / size, len(useful), keyword))
+    pages.sort(reverse=True)
+    page_words = [entry[2] for entry in pages]
+    new_words = list(dict.fromkeys(word for word in proposed if word not in state['queries']))
+    # Keep a productive keyword, while giving a new same-topic angle room to compete.
+    choices = page_words[:1] + new_words[:1] + page_words[1:] + new_words[1:]
+    selected = []
+    for word in choices:
+        if len(selected) >= limit:
+            break
+        count = len(selected) + 1
+        if remaining_requests < count + reserve_requests:
+            break
+        if remaining_usd < money(prices['search']) * count + reserve_usd:
+            break
+        selected.append(word)
+    return selected
+
 
 def write_inbox(store):
     candidates = sorted(store.state['candidates'].values(), key=lambda x: x.get('likes') or 0, reverse=True)
@@ -164,6 +266,45 @@ def fetch_history(store, client, target, channel='normal'):
             h['cursor'] = nxt
         store.save()
 
+def prefetch_histories(store, client, targets, channel):
+    """Fetch independent authors together, retaining per-author cursor dependencies."""
+    c, s = store.config, store.state
+    as_of = stamp(s['as_of']); groups = {}; failures = {}
+    for target in targets:
+        aid = target.get('author_id')
+        if not aid or as_of - target['published_at'] < c['min_age_days'] * DAY:
+            continue
+        groups.setdefault(aid, []).append(target)
+        s['authors'].setdefault(aid + ':' + channel, {'author_id': aid, 'channel': channel, 'pages': 0,
+            'cursor': 0, 'seen_cursors': [], 'complete': False, 'frontier': None, 'videos': {}, 'warning': None})
+    while True:
+        queue = []
+        for aid, related in groups.items():
+            h = s['authors'][aid + ':' + channel]
+            if aid in failures or h['complete'] or h['pages'] >= c['max_author_pages']:
+                continue
+            needed = any(not history_sufficient(t, select_baseline(t, h['videos'].values(), c, as_of), h, c) for t in related)
+            if needed:
+                queue.append((aid, h, {'sec_user_id': aid, 'max_cursor': h['cursor'], 'count': 20, 'sort_type': 0, 'channel': channel}))
+        if not queue: break
+        responses = call_many(client, [('posts', params, {}) for _, _, params in queue])
+        for (aid, h, params), (result, error) in zip(queue, responses):
+            if error:
+                if not isinstance(error, (APIError, BudgetStop)): raise error
+                failures[aid] = error; continue
+            for v in result['videos']:
+                if v['author_id'] == aid: h['videos'][v['id']] = v
+            dates = [v['published_at'] for v in result['videos'] if not v['is_top'] and isinstance(v['published_at'], int)]
+            if dates: h['frontier'] = min(dates + ([h['frontier']] if h['frontier'] is not None else []))
+            old = h['cursor']; h['pages'] += 1; h['seen_cursors'].append(old); h['complete'] = not result['has_more']
+            nxt = result.get('cursor')
+            if result['has_more'] and (nxt is None or nxt == old or nxt in h['seen_cursors']):
+                h['warning'] = 'Repeated or missing cursor; history coverage is incomplete.'; h['pages'] = c['max_author_pages']
+            elif not h['complete']: h['cursor'] = nxt
+            store.save()
+    return failures
+
+
 def restore_stats_and_attempts(store):
     """Recover saved projections, and count per-video attempts across regrouped requests."""
     attempts = Counter()
@@ -195,21 +336,49 @@ def get_stats(store, client, ids):
     retry = getattr(client, 'retry_failed', False)
     missing = sorted({i for i in ids if store.state['stats'].get(i, {}).get('play_count') is None
                       and (attempts[i] == 0 or (retry and attempts[i] < 2))})
-    for start in range(0, len(missing), 2):
-        batch = missing[start:start + 2]
-        params = {'aweme_ids': ','.join(batch)}
-        refresh = retry and any(attempts[i] for i in batch)
-        r = client.call('stats', params, refresh=True) if refresh else client.call('stats', params)
+    batches = [missing[start:start + 2] for start in range(0, len(missing), 2)]
+    calls = [('stats', {'aweme_ids': ','.join(batch)}, {'refresh': True} if retry and any(attempts[i] for i in batch) else {}) for batch in batches]
+    errors = []
+    for batch, (result, error) in zip(batches, call_many(client, calls)):
+        if error:
+            errors.append(error); continue
         checked = store.state.setdefault('stats_checked', {})
         for vid in batch:
             checked[vid] = attempts[vid] + 1
             store.state['stats'].setdefault(vid, {'play_count': None})
-        for vid, data in r['statistics'].items():
+        for vid, data in result['statistics'].items():
             store.state['stats'][vid] = dict(data)
         store.save()
+    if errors:
+        raise next((e for e in errors if not isinstance(e, (APIError, BudgetStop))), errors[0])
+
+
+def verification_fingerprint(store, target, result):
+    """Keep an immutable identity/statistics snapshot; result.target can alias candidates."""
+    ids = [target['id']] + [v['id'] for v in result.get('baseline', [])]
+    return digest({'target': {k: target.get(k) for k in ('id', 'author_id', 'followers', 'published_at', 'is_top')},
+                   'statistics': {vid: store.state['stats'].get(vid) for vid in ids}})
+
+
+def verification_batch_size(store):
+    c = store.config
+    remaining = c['max_requests'] - len(store.reservations())
+    prices = c['pricing']['usd_per_request']
+    stats_calls = (c['baseline_count'] + 2) // 2
+    calls_per_target = c['max_author_pages'] + stats_calls
+    try:
+        cost = money(prices['posts']) * c['max_author_pages'] + money(prices['stats']) * stats_calls
+        credit = money(c['budget_usd']) - store.reserved_cost()
+        capacity = min(remaining // calls_per_target, int(credit / cost))
+    except (StopRun, ArithmeticError):
+        capacity = 1
+    # A single target can still complete entirely from already saved data.
+    return max(1, min(VERIFY_BATCH_SIZE, capacity))
+
 
 def verify(store, client, channel='normal'):
     c, s = store.config, store.state
+    restore_stats_and_attempts(store)
     all_reviewed = [v for v in s['candidates'].values() if v['review']['decision'] == 'include']
     if not all_reviewed:
         raise StopRun('No included candidates. Review relevance before querying author lists and view counts.')
@@ -222,13 +391,32 @@ def verify(store, client, channel='normal'):
         if t.get('followers') is None or t['followers'] > c['max_followers']:
             s['results'][t['id']] = score(t, [], s['stats'], c)
             continue
+        if not t.get('author_id'):
+            s['results'][t['id']] = score(t, [], s['stats'], c, listed=False)
+            continue
+        if stamp(s['as_of']) - t['published_at'] < c['min_age_days'] * DAY:
+            s['results'][t['id']] = score(t, [], s['stats'], c, as_of=stamp(s['as_of']))
+            continue
+        previous = s['results'].get(t['id'], {})
+        same_target = (previous.get('history_key') == t['author_id'] + ':' + channel
+                       and previous.get('verification_fingerprint') == verification_fingerprint(store, t, previous))
+        if previous.get('status') in ('qualified', 'limited', 'below_threshold') and same_target:
+            previous['target'] = t
+            continue
         if len(selected) < c['max_candidates']:
             selected.append(t)
-            s['results'].setdefault(t['id'], waiting(t, '已纳入，等待统计核验'))
+            s['results'][t['id']] = waiting(t, '已纳入，等待统计核验')
         else:
             s['results'].setdefault(t['id'], waiting(t, '达到本轮候选核验数量上限，尚未处理'))
     store.save()
-    for target in selected:
+    history_failures = {}
+    batch_end = 0
+    for index, target in enumerate(selected):
+        if index >= batch_end and getattr(client, 'parallel_safe', False):
+            batch_end = index + verification_batch_size(store)
+            batch = [t for t in selected[index:batch_end]
+                     if t['author_id'] not in history_failures]
+            history_failures.update(prefetch_histories(store, client, batch, channel))
         baseline = []
         if not target.get('author_id'):
             s['results'][target['id']] = score(target, [], s['stats'], c, listed=False)
@@ -239,6 +427,12 @@ def verify(store, client, channel='normal'):
             store.save()
             continue
         try:
+            if target['author_id'] in history_failures:
+                available = s['authors'][target['author_id'] + ':' + channel]
+                baseline = select_baseline(target, available['videos'].values(), c, stamp(s['as_of']))
+                enough_history = history_sufficient(target, baseline, available, c) and len(baseline) >= c['min_baseline_count']
+                if not enough_history:
+                    raise history_failures[target['author_id']]
             history, baseline = fetch_history(store, client, target, channel)
             listed = target['id'] in history['videos']
             coverage = history_sufficient(target, baseline, history, c)
@@ -247,6 +441,7 @@ def verify(store, client, channel='normal'):
             s['results'][target['id']] = score(target, baseline, s['stats'], c, listed=listed,
                                              coverage=coverage, as_of=stamp(s['as_of']))
             s['results'][target['id']]['history_key'] = target['author_id'] + ':' + channel
+            s['results'][target['id']]['verification_fingerprint'] = verification_fingerprint(store, target, s['results'][target['id']])
         except BudgetStop as e:
             s['results'][target['id']] = {'target': target, 'baseline': baseline, 'status': 'pending',
                                          'reason': '预算已用完，保留已取得数据', 'median_plays': None,

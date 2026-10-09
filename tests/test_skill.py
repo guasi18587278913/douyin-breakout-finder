@@ -122,7 +122,8 @@ class TestBudgetAndCache(unittest.TestCase):
         with patch('tikhub.atomic_json',side_effect=OSError('disk full')):
             with self.assertRaises(StopRun):cl.call('stats',p)
         self.assertEqual(len(self.s.reservations()),1)
-        with self.assertRaises(APIError):cl.call('stats',p)
+        # Storage failure is fatal to this client; explicit retry creates a fresh one.
+        with self.assertRaises(StopRun):cl.call('stats',p)
         self.assertEqual(len(self.s.reservations()),1)
         retry=TikHubClient(self.s,True,True,transport=self.payload)
         retry.call('stats',p);self.assertEqual(len(self.s.reservations()),2)

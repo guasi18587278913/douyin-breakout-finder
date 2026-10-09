@@ -20,10 +20,13 @@ if behavior == 'oversized':
 packet = request['packet']
 stage = request['stage']
 if stage == 'prepare-research':
-    answer = {'ready': True}
+    answer = {'ready': True, 'search_keywords': [] if packet.get('resume') else packet.get('initial_keywords', ['FDE'])}
 elif stage == 'semantic-review':
     answer = {'reviews': {v['id']: {'decision': 'include', 'reason': '离线合成候选，与本轮主题相关。', 'priority': 1}
                           for v in packet['candidates']}, 'next_keywords': [], 'search_reason': ''}
+elif packet.get('schema') == 'selection-report-v1':
+    from report_fixture import selection_answer
+    answer = selection_answer(packet)
 else:
     cases = {}
     for row in packet['results']:

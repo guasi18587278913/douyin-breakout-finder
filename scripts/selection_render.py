@@ -1,0 +1,125 @@
+"""Fixed report layout. Model prose is escaped; all observations come from stored data."""
+import html
+import math
+import re
+from datetime import datetime, timezone, timedelta
+from core import read_json, stamp
+from cover_cache import valid_cached
+
+E = lambda x: html.escape(str(x), quote=True)
+
+
+def number(value):
+    return '未取得' if value is None else format(value, ',.1f').rstrip('0').rstrip('.') if isinstance(value, float) else format(value, ',')
+
+
+def compact(value):
+    if value is None:
+        return '未取得'
+    if value >= 10000:
+        return ('%.1f' % (value / 10000)).rstrip('0').rstrip('.') + '万'
+    return number(value)
+
+
+def date(ts):
+    return '日期未取得' if ts is None else datetime.fromtimestamp(ts, timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+
+
+def video_link(vid):
+    return 'https://www.douyin.com/video/' + vid
+
+
+def opening(store, story):
+    ids = list(story['cases'])
+    topic = story['topic_label']
+    if not ids:
+        return '这次围绕%s查找，暂时没有足够的已核验案例可放进正文。' % topic
+    targets = [store.state['candidates'][v] for v in ids]
+    plays = [store.state['results'][v]['play_count'] for v in ids]
+    count = len(ids)
+    which = {1: '这条', 2: '这两条', 3: '这三条', 4: '这四条', 5: '这五条'}[count]
+    followers = [v.get('followers') for v in targets]
+    prefix = '%s讲%s的视频' % (which, (' ' + topic + ' ') if re.search('[A-Za-z]', topic) else topic)
+    if any(v is None for v in followers):
+        return prefix + '，有几个值得参考的选题切口。'
+    ceiling = (int(max(followers)) // 1000 + 1) * 1000
+    step = 10000 if min(plays) >= 10000 else 1000 if min(plays) >= 1000 else 1
+    floor = int((min(plays) - 1) // step) * step
+    every = '都' if count > 1 else ''
+    if floor > 0:
+        return '%s，作者粉丝%s不到 %s，播放量却%s超过了 %s。' % (prefix, every, compact(ceiling).replace(',', ''), every, compact(floor))
+    return '%s，作者粉丝%s不到 %s，本轮记录的播放量最高为 %s。' % (prefix, every, compact(ceiling), compact(max(plays)))
+
+
+def original_title(v):
+    return (v.get('title') or '作品标题未取得').split('\n', 1)[0][:200]
+
+
+def card(store, vid, covers):
+    v = store.state['candidates'][vid]
+    r = store.state['results'][vid]
+    demo = store.state.get('demo', False)
+    cover = covers.get(vid)
+    picture = ('<img class="selection-cover" src="data:%s;base64,%s" alt="%s的原作品封面">' %
+               (E(cover['mime']), E(cover['base64']), E(v['author_name']))) if valid_cached(cover) else '<div class="selection-cover cover-missing">暂无原封面</div>'
+    links = '' if demo else '<a href="'+video_link(vid)+'" target="_blank" rel="noopener noreferrer">看原视频 ↗</a>'
+    aid = v.get('author_id')
+    if not demo and isinstance(aid, str) and re.fullmatch(r'[A-Za-z0-9_-]{8,200}', aid):
+        links += '<a href="https://www.douyin.com/user/'+E(aid)+'" target="_blank" rel="noopener noreferrer">作者主页 ↗</a>'
+    status = '<span class="selection-limited">有限样本参考</span>' if r['status'] == 'limited' else ''
+    out = '<article class="selection-card" id="case-%s"><div class="selection-card-top">%s<div><h3>%s</h3><p class="selection-author">%s · %s 粉丝</p><p class="selection-date">%s 发布 %s</p><div class="selection-play"><strong>%s</strong><span>这条作品播放量</span></div><p class="selection-ratio">约为账号正常播放量的 %s 倍</p><div class="selection-links">%s</div></div></div>' % (
+        E(vid), picture, E(original_title(v)), E(v['author_name']), number(v.get('followers')), date(v.get('published_at')), status,
+        compact(r['play_count']), number(round(r['ratio'])), links)
+    maximum = max(r['play_count'], r['median_plays'])
+    out += '<div class="selection-comparison" role="img" aria-label="%s">' % E('这条作品播放量%s次，账号正常播放量%s次。' % (number(r['play_count']), number(r['median_plays'])))
+    for label, value in [('这条作品播放量', r['play_count']), ('账号正常播放量', r['median_plays'])]:
+        width = value / maximum * 100
+        out += '<div class="selection-bar-row"><div><span>%s</span><span>%s 次</span></div><div class="selection-track"><span style="width:%.5f%%"></span></div></div>' % (label, number(value), width)
+    out += '</div><details class="selection-basis"><summary>账号正常播放量怎么来的？</summary><p>参考同一作者附近发布的 %s 条作品。按播放量排序，取中间水平，减少偶尔一条高播放作品的影响。全部为采集时累计播放，发布时间和发布后经过的天数可能不同。</p><div class="scroll"><table><thead><tr><th>参考作品</th><th>发布日期</th><th>播放量</th></tr></thead><tbody>' % len(r.get('baseline', []))
+    for b in r.get('baseline', []):
+        title = E(original_title(b))
+        if not demo:
+            title = '<a target="_blank" rel="noopener noreferrer" href="'+video_link(b['id'])+'">'+title+'</a>'
+        out += '<tr><td>%s</td><td>%s</td><td>%s</td></tr>' % (title, date(b.get('published_at')), number(store.state['stats'].get(b['id'], {}).get('play_count')))
+    return out + '</tbody></table></div></details></article>'
+
+
+def render_selection(store, story):
+    covers = read_json(store.root / 'covers.json', {})
+    if not isinstance(covers, dict):
+        covers = {}
+    out = '<section class="selection-report"><h1 class="selection-opening">'+E(opening(store, story))+'</h1>'
+    out += ''.join('<p>'+E(p)+'</p>' for p in story['intro'])
+    if story['status'] != 'complete':
+        out += '<p class="selection-incomplete">部分数据或核验没有完成，以下只交代本轮已取得的信息；不能据此判断这个主题没有爆款。</p>'
+    for n, lesson in enumerate(story['lessons'], 1):
+        out += '<section class="selection-lesson"><h2>'+E(str(n)+' · '+lesson['title'])+'</h2>'
+        for case in lesson['cases']:
+            vid = case['video_id']
+            v = store.state['candidates'][vid]
+            r = store.state['results'][vid]
+            out += '<p class="selection-case-name">案例：《'+E(original_title(v))+'》</p>'
+            out += '<p>这条视频，本轮记录的播放量约 '+compact(r['play_count'])+'。</p>'
+            out += ''.join('<p>'+E(p)+'</p>' for p in case['paragraphs'])
+        out += '<p class="selection-borrow">💡这个思路怎么借鉴？</p>'
+        for app in lesson['applications']:
+            role = '如果你是' if any(x in app['audience'] for x in ('创作者', '博主', '老师', '教师')) else '如果你做'
+            out += '<div class="selection-example"><p>'+role+E(app['audience'])+'，可以试试：</p><p>“'+E(app['idea'])+'”</p></div>'
+        out += '<p class="selection-takeaway">'+E(lesson['takeaway'])+'</p>'
+        out += ''.join(card(store, case['video_id'], covers) for case in lesson['cases'])
+        out += '</section>'
+    out += '<section class="selection-closing"><h2>下次找选题，先想清楚这几件事</h2><ol>'
+    out += ''.join('<li>'+E(q)+'</li>' for q in story['closing']['questions'])+'</ol>'
+    out += ''.join('<p>'+E(p)+'</p>' for p in story['closing']['paragraphs'])+'</section>'
+    from selection_report import eligible_ids
+    more = sorted(eligible_ids(store) - set(story['cases']), key=lambda vid: -(store.state['results'][vid].get('ratio') or 0))
+    if more:
+        out += '<section class="selection-more"><h2>更多小号爆款</h2><p>这些作品也符合本轮筛选条件，可以继续查看原视频。</p>'
+        out += ''.join(card(store, vid, covers) for vid in more)
+        out += '</section>'
+    collected = datetime.fromtimestamp(stamp(store.state['as_of']), timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+    title_only = any(c['basis'] == 'title-description' for c in story['cases'].values())
+    basis = '本轮没有足够的合格案例用于解读。' if not story['cases'] else '本报告包含依据标题与简介的选题解读。' if title_only else '案例解读引用了本轮登记的内容证据。'
+    out += '<details class="selection-notes"><summary>数据来源与解读依据</summary><p>数据采集于 '+E(collected)+'（北京时间）。'+basis+'你可以结合自己的内容尝试，实际表现还需要验证。</p><ul>'
+    out += '</ul></details></section>'
+    return out

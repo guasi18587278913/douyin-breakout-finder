@@ -41,7 +41,7 @@ class ReplayClient:
         self.store.event({'event':'saved','operation':op,'key':key,'demo':True})
         return result
 
-def run_demo(out):
+def run_demo(out, selection=False):
     fixture = read_json(Path(__file__).resolve().parent.parent/'assets'/'demo.json')
     c = default_config('FDE 离线演示', list(fixture['queries']), '0')
     c['scope'] = '合成的 FDE 视频示例，只用于检查安装、流程和计算，不是调研结论。'
@@ -55,6 +55,7 @@ def run_demo(out):
         chosen=[i for i,r in store.state['results'].items() if r['status']=='qualified']
         comments(store,client,chosen)
         demo_research(store)
+        if selection: demo_selection(store)
         summary=render(store)
     return store,summary
 
@@ -85,3 +86,25 @@ def demo_research(store):
         'cases':cases,'next_topics':[{'title':'我把一项重复录入工作交给 AI，逐步检查会发生什么','text':'换成自己的具体任务，展示真实输入和失败情况，不预先承诺效率提升。','video_ids':selected}],
         'limitations':['本页为合成数据示例，没有调用真实付费接口。','内容结构来自明确标注的合成逐字稿。','其他未核验样本仍单列，不并入已核验数量。']}
     accept_research(store,answer)
+
+
+def demo_selection(store):
+    """Current delivery example; the older fixture remains available for compatibility tests."""
+    from selection_report import FORMAT, eligible_ids
+    from research import accept_research
+    selected = sorted(eligible_ids(store))[:3]
+    cases = [{'video_id':vid, 'paragraphs':[
+        'FDE 这个词听起来有点抽象。这条合成案例把它放进了一个具体任务：每天有人需要把供应商信息录进系统。',
+        '读者先知道自己会在什么地方用到这套办法，再去理解它怎么处理信息，就容易跟上了。',
+        '你也可以从工作里挑一件反复做的小事，解释原来怎么做、现在准备怎么做，以及结果该怎么检查。'],
+        'evidence_ids':[vid+':title']} for vid in selected]
+    answer = {'format':FORMAT, 'topic_label':'FDE', 'title':'免费示例：把抽象概念放进具体任务',
+              'intro':['下面用合成案例演示报告的阅读方式。正式调研会按你输入的主题，使用实际取得的作品和数据。'],
+              'lessons':[{'title':'概念不好懂，就从眼前的一件事讲起', 'cases':cases,
+                          'applications':[{'audience':'办公教程','idea':'同一份订单信息，怎样减少一次重复录入？'},
+                                          {'audience':'收纳','idea':'每天出门都找不到钥匙，玄关怎样安排才顺手？'}],
+                          'takeaway':'先让人知道这件事能帮上什么忙，再解释用到了什么工具。'}] if cases else [],
+              'closing':{'questions':['我的用户眼前需要完成什么事？','我能拿什么例子把它讲清楚？'],
+                         'paragraphs':['把例子换成你熟悉的一件事，先拍一个小范围演示，再检查效果。']},
+              'limitations':['全部为合成数据和教学示例，不是对真实账号的研究。']}
+    accept_research(store, answer, expected_format=FORMAT)

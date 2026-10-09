@@ -3,7 +3,7 @@ import json
 import re
 import urllib.parse
 import urllib.request
-from core import StopRun, default_config, money, now, validate_config
+from core import APIError, StopRun, default_config, money, now, validate_config
 from tikhub import BASE, ENDPOINTS, NoRedirect
 from workflow import apply_review, annotate
 
@@ -143,7 +143,10 @@ def fetch_prices():
     prices = {}
     for op, (_, endpoint) in ENDPOINTS.items():
         url = BASE + '/api/v1/tikhub/user/get_endpoint_info?' + urllib.parse.urlencode({'endpoint': endpoint})
-        status, raw = request(url, timeout=12, limit=1024*1024)
+        try:
+            status, raw = request(url, timeout=12, limit=1024*1024)
+        except APIError:
+            raise StopRun('暂时没能读取 TikHub 价格，请稍后重试。这一步只检查价格，不会产生查询费用。') from None
         if status != 200:
             raise StopRun('暂时无法连接 TikHub，请稍后重试。你的 Key 没有用于这次价格检查。')
         try:

@@ -139,7 +139,9 @@ class BridgeContract(unittest.TestCase):
                                 source=Path(temp)/(vid+'.txt');source.write_text('合成逐字稿：开场提出重复录入问题，中段展示输入和操作，最后核对结果并保留人工判断。只用于离线测试。',encoding='utf-8')
                                 entry=add_evidence(store,vid,source,'transcript','测试构造的逐字稿，无外部视频或用户数据。')
                                 cases[vid]={'title':'合成的任务演示','category':'任务演示','summary':'用一个小任务解释流程。','title_angle':'以任务作为入口。','opening':'先提出重复录入问题。','outline':['展示输入','完成操作','检查结果'],'takeaway':'参考清晰的任务组织方式。','limitations':'全部为合成测试素材。','evidence_ids':[entry['id']]}
-                            answer={'headline':'本轮主题观察','lead':'这是测试宿主写入的合成研究报告，不是真实调研。','findings':[{'title':'从任务解释概念','text':'通过输入和检查组织合成案例。','video_ids':list(cases)}],'categories':[{'title':'任务演示','text':'合成任务案例的分类。','video_ids':list(cases)}],'cases':cases,'next_topics':[{'title':'用自己的任务检查流程','text':'一个有来源的合成选题建议。','video_ids':list(cases)}],'limitations':['模拟数据，不产生真实接口费用。']}
+                            from report_fixture import selection_answer
+                            from research import analysis_packet
+                            answer=selection_answer(analysis_packet(store))
                         else:raise AssertionError(req)
                         submit(session.bridge.folder,req['request_id'],answer);after=req['request_id']
                 except Exception as e:errors.append(e)
@@ -152,7 +154,7 @@ class BridgeContract(unittest.TestCase):
             self.assertFalse(errors,errors);self.assertEqual(stages,['prepare-research','semantic-review','content-analysis'])
             self.assertEqual(session.status,'done');self.assertTrue(session.summary['report_complete']);self.assertIsNone(session.key)
             html=(session.run_dir/'report.html').read_text()
-            self.assertIn('本轮主题观察',html);self.assertIn('内容如何展开',html)
+            self.assertIn('自动生成的离线合成报告',html);self.assertIn('把一个具体任务讲清楚',html);self.assertIn('案例解读引用了本轮登记的内容证据',html)
 
     def test_missing_host_stops_before_quote_or_paid_requests(self):
         with tempfile.TemporaryDirectory() as temp:

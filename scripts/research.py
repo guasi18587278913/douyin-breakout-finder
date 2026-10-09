@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from core import StopRun, atomic_json, digest, now, read_json
-from workflow import apply_review
+from workflow import apply_review, keyword_quality, MAX_SEARCH_ROUNDS
 
 SELECTED=('qualified','limited')
 
@@ -79,11 +79,11 @@ def add_evidence(store,vid,source,kind,note):
 
 def review_packet(store,round_number):
     return {'run_dir':str(store.root),'topic':store.config['topic'],'scope':store.config['scope'],
-            'round':round_number,'max_followers':store.config['max_followers'],
+            'round':round_number,'max_rounds':MAX_SEARCH_ROUNDS,'keyword_quality':keyword_quality(store),'max_followers':store.config['max_followers'],
             'remaining_requests':max(0,store.config['max_requests']-len(store.reservations())),
             'candidates':[{k:v.get(k) for k in ['id','title','author_name','followers','likes','queries','review']} for v in store.state['candidates'].values()],
             'queries':[{k:q.get(k) for k in ['pages','complete','error']}|{'keyword':kw} for kw,q in store.state['queries'].items()],
-            'instructions':'逐条语义复核，不能用连续词匹配代替理解。小号主榜仍遵守粉丝限制。可建议至多3个同主题补搜词/已有词翻页，最多补搜两轮；不能调整预算。返回 reviews（所有候选ID）、next_keywords、search_reason。'}
+            'instructions':'逐条语义复核，不能用连续词匹配代替理解。小号主榜仍遵守粉丝限制。可建议至多3个同主题的新搜索词：优先具体用途、问题或使用场景，避开只反复返回大号或重复作品的词。程序会先核验已有小号，再按结果决定换词或翻页；正文精选数量不限制总结果数。round>=2时next_keywords必须为空，最多补搜两轮；不能调整预算。返回 reviews（所有候选ID）、next_keywords、search_reason。'}
 
 
 def accept_review(store,answer):
@@ -102,26 +102,34 @@ def accept_review(store,answer):
 
 
 def analysis_packet(store):
+    from selection_report import FORMAT, eligible_ids, instructions, unresolved_data
+    featured = eligible_ids(store)
     compact_results=[]
-    for r in store.state['results'].values():
+    for vid, r in store.state['results'].items():
+        if vid not in featured: continue
         row={k:r.get(k) for k in ['status','reason','play_count','median_plays','ratio','limited_sample']}
         row['target']={k:r['target'].get(k) for k in ['id','title','author_name','followers','published_at']}
         row['baseline']=[{'id':v['id'],'title':v['title'][:500],'published_at':v['published_at'],'play_count':store.state['stats'].get(v['id'],{}).get('play_count')} for v in r.get('baseline',[])]
         compact_results.append(row)
     listed={}
-    for vid in store.state['candidates']:
+    for vid in sorted(featured):
         listed[vid]=[]
         for e in evidence(store,vid):
             item=dict(e);item['text']=e['text'][:4000];item['truncated']=len(e['text'])>4000
             listed[vid].append(item)
     return {'run_dir':str(store.root),'topic':store.config['topic'],'scope':store.config['scope'],
             'results':compact_results,
-            'candidates':[{k:v.get(k) for k in ['id','title','author_name','followers','review','cover_url','original_audio_url']} for v in store.state['candidates'].values()],
+            'candidates':[{k:v.get(k) for k in ['id','title','author_name','followers','review','cover_url','original_audio_url']} for v in store.state['candidates'].values() if v['id'] in featured],
+            'dataset_summary':{'searched_count':len(store.state['candidates']), 'qualified_count':len(featured), 'data_incomplete':unresolved_data(store)},
             'evidence':listed,
-            'schema':'research-v1','instructions':'按完整研究报告结构提交 headline、lead、findings、categories、cases、next_topics、limitations。findings/categories/next_topics每项有video_ids。cases以视频ID为键，含title、category、summary、title_angle、opening、outline、takeaway、limitations、evidence_ids。无逐字稿/观看记录时opening和outline必须留空，不能凭标题想象口播。可先用assist evidence注册实际阅读证据；truncated=true时读取file中的完整文字。数字只能来自给定结果，不能新增统计。'}
+            'schema':FORMAT, 'featured_candidates':sorted(featured),
+            'instructions':instructions()}
 
 
 def validate_research(store,answer):
+    from selection_report import FORMAT, validate
+    if isinstance(answer, dict) and answer.get('format') == FORMAT:
+        return validate(store, answer)
     if not isinstance(answer,dict):raise StopRun('研究报告需要对象格式。')
     if set(answer)-{'headline','lead','findings','categories','cases','next_topics','limitations'}:
         raise StopRun('报告只能提交分析文字与证据引用，不能提交统计或状态字段。')
@@ -168,7 +176,9 @@ def validate_research(store,answer):
     return result
 
 
-def accept_research(store,answer):
+def accept_research(store,answer,expected_format=None):
+    if expected_format and (not isinstance(answer,dict) or answer.get('format')!=expected_format):
+        raise StopRun('请按当前选题报告格式提交，不能用旧版报告代替。')
     report=validate_research(store,answer)
     store.state['research']=report;store.save()
     atomic_json(store.root/'research.json',report)
@@ -183,7 +193,10 @@ def report_state(store):
     s=store.state;story=s.get('research')
     awaiting=sum(v['review']['decision'] in ('unsure','pending') for v in s['candidates'].values())
     valid=bool(story and story.get('data_hash')==digest({'candidates':s['candidates'],'results':s['results']}) and story.get('evidence_hash')==evidence_hash(store,story.get('cases',{})))
+    from selection_report import FORMAT, completion_hash
+    if valid and story.get('format') == FORMAT:
+        valid = story.get('completion_hash') == completion_hash(store)
     if not valid:return {'status':'awaiting_analysis','label':'研究尚未完成','review_pending_count':awaiting,'story':None}
     complete=story.get('status')=='complete'
-    return {'status':'complete' if complete else 'partial','label':'研究报告' if complete else '阶段报告 · 证据待补',
+    return {'status':'complete' if complete else 'partial','label':('选题解读报告' if story.get('format')==FORMAT else '研究报告') if complete else '阶段报告 · 证据待补',
             'review_pending_count':awaiting,'story':story}

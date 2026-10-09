@@ -86,7 +86,7 @@ def default_config(topic, keywords, budget=None):
         'max_followers': 10000, 'min_ratio': 10,
         'baseline_count': 10, 'min_baseline_count': 6,
         'comparison_window_days': 90, 'min_age_days': 7,
-        'max_candidates': 8, 'max_search_pages': 1, 'max_author_pages': 3,
+        'max_candidates': 50, 'max_search_pages': 1, 'max_author_pages': 3,
         'max_requests': 60, 'budget_usd': budget,
         'pricing': {'checked_at': None, 'source_url': None,
                     'usd_per_request': {op: None for op in OPS}},
