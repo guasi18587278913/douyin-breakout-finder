@@ -1,4 +1,4 @@
-"""Local-only onboarding. API keys live in memory and are never sent to a model."""
+"""Local-only onboarding. API keys can be remembered privately and are never sent to a model."""
 import argparse
 import hmac
 import json
@@ -12,6 +12,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from core import Store, StopRun, atomic_json, now, read_json
+from credentials import CredentialStore, CredentialError, validate_key
 from bridge import FileBridge, AssistanceNeeded
 from analyst import LocalAnalyst, MODES
 from research import review_packet, accept_review, analysis_packet, accept_research, report_state
@@ -35,6 +36,14 @@ class Session:
         self.token = secrets.token_urlsafe(32)
         self.key = None
         self.mode = None
+        self.credentials = CredentialStore(self.data_dir / 'private', forbidden_roots=[ROOT])
+        self.key_remembered = False
+        self.key_notice = ''
+        try:
+            self.key_remembered = bool(self.credentials.load())
+            if self.key_remembered: self.mode = 'live'
+        except CredentialError as error:
+            self.key_notice = str(error)
         self.pricing = None
         self.answers = None
         self.run_dir = None
@@ -75,7 +84,9 @@ class Session:
                 except (StopRun,OSError,ValueError):
                     pass
             return dict(status=self.status, message=self.message, mode=self.mode,
-                        key_ready=bool(self.key), assistant_connected=bool(self.automatic.available() if self.automatic else self.bridge and self.bridge.available()),
+                        key_ready=bool(self.key) or (self.key_remembered and self.credentials.exists()),
+                        key_saved=self.credentials.exists(), key_storage_available=self.credentials.available, key_notice=self.key_notice,
+                        assistant_connected=bool(self.automatic.available() if self.automatic else self.bridge and self.bridge.available()),
                         assistant_mode=self.automatic.name if self.automatic else 'host',
                         assistant_label=self.automatic.label if self.automatic else '当前智能体',
                         can_resume=bool(self.automatic and self.analysis_interrupted and self.mode=='live' and self.run_dir and self.summary and self.status in ('needs_analysis','error')),
@@ -90,6 +101,9 @@ class Session:
             answers = simple_brief(data) if data.get('description') else intake(data)
             config = None
             if self.mode == 'live':
+                if not self.key and self.key_remembered:
+                    self.key = self.credentials.load()
+                    self.key_remembered = bool(self.key)
                 if not self.key:
                     raise StopRun('请先填入本次会话的 TikHub Key。')
                 self.assistant = self.select_assistant()
@@ -343,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == '/api/quit':
                 self.session.cancelled.set()
-                self.reply(200, {'message': '已请求停止，不再发起新查询。正在进行的请求可能已计费；完成保存后会话将自动退出并清除 Key。'})
+                self.reply(200, {'message': '已请求停止，不再发起新查询。正在进行的请求可能已计费；完成保存后会话将自动退出并清除临时 Key；已记住的 Key 会保留，可在“新研究”页面点击“忘记 Key”。'})
                 def finish():
                     if self.session.worker:
                         self.session.worker.join()
@@ -358,12 +372,25 @@ class Handler(BaseHTTPRequestHandler):
                     if data.get('mode') not in ('live', 'demo'):
                         raise StopRun('请选择运行方式。')
                     key = data.get('key', '')
-                    if not isinstance(key, str) or len(key) > 2048 or any(ord(c) < 32 or ord(c) > 126 for c in key):
-                        raise StopRun('Key 格式不正确，请重新复制。')
-                    if data['mode'] == 'live' and not key.strip():
-                        raise StopRun('请输入 TikHub Key。')
+                    remember = data.get('remember', False)
+                    if type(remember) is not bool:
+                        raise StopRun('请明确是否记住 Key。')
+                    if data['mode'] == 'live':
+                        key = validate_key(key)
+                        if remember:
+                            self.session.credentials.save(key)
+                        else:
+                            self.session.credentials.forget()
+                        self.session.key_remembered = remember
+                        self.session.key_notice = ''
                     self.session.mode = data['mode']
-                    self.session.key = key.strip() if data['mode'] == 'live' else None
+                    self.session.key = key if data['mode'] == 'live' else None
+                elif path == '/api/forget-key':
+                    self.session.credentials.forget()
+                    self.session.key = None
+                    self.session.key_remembered = False
+                    self.session.mode = None
+                    self.session.key_notice = '已忘记保存的 Key，下次查询时需要重新填写。'
                 elif path == '/api/brief':
                     self.session.answers = simple_brief(data)
                 elif path == '/api/intake':

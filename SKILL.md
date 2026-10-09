@@ -11,7 +11,7 @@ description: 按主题发现抖音小号的异常高播放内容。提供本地 
 
 先读取本仓库的 `AGENTS.md`，再执行以下流程。其他客户端不会自动加载该文件时，由启动 Agent 显式读取。
 
-1. 简短说明：只需 **TikHub Key**，不用 GitHub Key；Key 在本机弹窗输入，不要发进聊天。入口是 <https://user.tikhub.io/dashboard/api>，用户注册登录后创建自己的 Key。不要代替用户充值。
+1. 简短说明：只需 **TikHub Key**，不用 GitHub Key；Key 在本机弹窗输入，不要发进聊天。勾选“在这台电脑记住 Key”可供下次自动使用；密钥另存本机私密目录，可在“新研究”页面忘记。入口是 <https://user.tikhub.io/dashboard/api>，用户注册登录后创建自己的 Key。不要代替用户充值。
 2. 检查 Python 3.9+ 与系统 curl 可用。获取完整 GitHub 仓库并读取本文件后，在仓库目录按**当前客户端**选择启动入口（Windows 通常用 `python`）：Codex 用 `python3 scripts/start.py --assistant codex`，Claude Code 用 `--assistant claude`，WorkBuddy 有可调用且已登录的 CodeBuddy CLI 时用 `--assistant workbuddy`。不要为了兼容其他客户端擅自安装 Codex。默认 `auto` 优先识别启动客户端和安装来源，不在多个账户之间猜测或失败后静默切换。
 3. 自动模式下，后台按需启动分析进程；返回 URL 后用户在网页生成报告，不需要原聊天持续等待。报告分析消耗所选客户端的现有额度，TikHub 数据预算单独计算。没有可调用 CLI 的 WorkBuddy、DSH 或其他宿主，先读取 `references/agent-workflow.md`，用 `--assistant host` 启动兼容模式，并立即进入持续等待循环直到 `finished`；不能只打开网页就结束回复。仅能安装 Skill 不代表支持独立后台分析。
 4. 页面只需要用户用一句话说想研究什么，再选一个可选方向，点击“生成报告”。没有 Key 时自动弹出输入框。不让用户填范围、预算、单价、粉丝上限或播放倍数。

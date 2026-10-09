@@ -6,6 +6,7 @@
 <div id="refinement" class="refinement" hidden><p id="brief-title"></p><div class="focus-options"><button type="button" data-focus="all" class="selected">都看看</button><button type="button" data-focus="tutorial">工具与教程</button><button type="button" data-focus="case">实战案例</button><button type="button" data-focus="opinion">观点与趋势</button></div></div>
 <div id="error" class="error" role="alert" hidden></div><div class="composer-bottom"><button id="start" class="primary" type="button" aria-describedby="start-cost-note"><span id="start-label">帮我找爆款</span><svg><use href="#arrow"/></svg></button></div><p id="start-cost-note" class="cost-note" hidden>生成报告将从你的 TikHub 余额按量扣费，预计约 1 元；本轮查询预算约 3.5 元。</p></div>
 
+<div id="saved-key-status" class="saved-key-status" hidden><span>已记住 TikHub Key，下次无需再填。</span><button id="forget-key" type="button">忘记 Key</button></div><p id="key-notice" class="cost-note" role="status" hidden></p>
 <p id="analysis-note" class="cost-note"></p>
 <div class="suggestions"><span>试试这些方向</span><button type="button" data-example="AI 自媒体">AI 自媒体 <span>↗</span></button><button type="button" data-example="电商 AI 自动化">电商 AI 自动化 <span>↗</span></button><button type="button" data-example="普通人做自媒体">普通人做自媒体 <span>↗</span></button></div>
 </section>
@@ -15,6 +16,7 @@
 <button id="close-dialog" class="close" type="button" aria-label="关闭">×</button>
 <input id="key" aria-label="TikHub API Key" type="password" autocomplete="off" placeholder="粘贴你的 API Key">
 <p class="key-help">没有密钥？<a href="https://user.tikhub.io/dashboard/api" target="_blank" rel="noopener noreferrer">前往 TikHub 注册并获取 ↗</a></p>
+<label class="key-remember"><input id="remember-key" type="checkbox" checked>在这台电脑记住 Key</label>
 <p id="key-error" class="error" role="alert" hidden></p>
 <button id="save-key" class="primary" type="submit"><span id="key-action">使用此密钥</span><svg><use href="#arrow"/></svg></button>
-<div class="key-private">Key 仅用于你的电脑访问 TikHub，其他任何人不会看到这个信息。</div></form></dialog></body></html>
+<div class="key-private">勾选后会保存在这台电脑的私密目录，下次自动读取。查询时仅发送给 TikHub，不进入报告。</div></form></dialog></body></html>

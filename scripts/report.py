@@ -156,7 +156,7 @@ def render(store):
     if s['stops'] and not editorial:
         content += '<details><summary>运行中的停止原因</summary><ul>' + ''.join('<li>%s：%s</li>' % (E(x['phase']),E(x['message'])) for x in s['stops']) + '</ul></details>'
     content += '</details>'
-    content += ('' if editorial else '<p><a href="summary.json">方法与预算记录</a> · <a href="candidates.json">候选与相关性审查</a></p>') + '<footer>报告只保存公开研究字段。密钥不写入配置、缓存或分享包。对外分享运行目录前，请自行检查主题、评论和内容笔记是否适合公开。</footer></main></body></html>'
+    content += ('' if editorial else '<p><a href="summary.json">方法与预算记录</a> · <a href="candidates.json">候选与相关性审查</a></p>') + '<footer>报告只保存公开研究字段。密钥不写入报告、研究缓存或分享包。对外分享运行目录前，请自行检查主题、评论和内容笔记是否适合公开。</footer></main></body></html>'
     temp = store.root / 'report.html.tmp'
     temp.write_text(content,encoding='utf-8')
     temp.replace(store.root / 'report.html')

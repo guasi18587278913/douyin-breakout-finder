@@ -4,7 +4,7 @@ function $(id) { const el=document.getElementById(id); if(!el) throw new Error('
 /** @param {string} id */
 function input(id) { const el=$(id); if(!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) throw new Error('输入项缺失'); return el; }
 /** @typedef {{topic:string, keywords:string[], anchors:string[]}} Brief */
-/** @typedef {{status:string,message:string,mode:string,key_ready:boolean,assistant_mode:string,assistant_label:string,can_resume:boolean,answers:Brief,summary:{report_format:string,demo:boolean,candidate_count:number,qualified_count:number,limited_count:number,pending_count:number,review_pending_count:number,report_complete:boolean,research_status:string,generated_at:string},report_url:string,output_dir:string}} Snapshot */
+/** @typedef {{status:string,message:string,mode:string,key_ready:boolean,key_saved:boolean,key_storage_available:boolean,key_notice:string,assistant_mode:string,assistant_label:string,can_resume:boolean,answers:Brief,summary:{report_format:string,demo:boolean,candidate_count:number,qualified_count:number,limited_count:number,pending_count:number,review_pending_count:number,report_complete:boolean,research_status:string,generated_at:string},report_url:string,output_dir:string}} Snapshot */
 /** @type {Partial<Snapshot>} */ let state={};
 let lastReportStamp='';
 let refined=false, selectedFocus='all', pendingStart=false;
@@ -22,6 +22,11 @@ async function api(path,body){
 function updateStartNotice(){ $('start-cost-note').hidden=!(refined && state.key_ready); }
 function updateConnection(){
   updateStartNotice();
+  $('saved-key-status').hidden=!state.key_saved;
+  $('key-notice').textContent=state.key_notice || ''; $('key-notice').hidden=!state.key_notice;
+  const remember=/** @type {HTMLInputElement} */ ($('remember-key'));
+  remember.disabled=!state.key_storage_available;
+  if(remember.disabled)remember.checked=false;
   $('analysis-note').textContent=state.assistant_mode==='host'?'报告由当前智能体分析，请保持助手运行。':'报告自动使用'+(state.assistant_label||'本机智能体')+'的登录与额度；无需回到聊天。';
 }
 /** @param {boolean} pending */
@@ -122,10 +127,11 @@ $('close-dialog').onclick=()=>{/** @type {HTMLDialogElement} */ ($('key-dialog')
 $('key-form').onsubmit=async event=>{
   event.preventDefault();const button=/** @type {HTMLButtonElement} */ ($('save-key'));button.disabled=true;error('','key-error');
   try{
-    state=await api('/api/setup',{mode:'live',key:input('key').value});input('key').value='';updateConnection();
+    state=await api('/api/setup',{mode:'live',key:input('key').value,remember:/** @type {HTMLInputElement} */ ($('remember-key')).checked});input('key').value='';updateConnection();
     /** @type {HTMLDialogElement} */ ($('key-dialog')).close();if(pendingStart)await begin();
   }catch(e){error(message(e),'key-error');}finally{button.disabled=false;}
 };
+$('forget-key').onclick=()=>action($('forget-key'),async()=>{state=await api('/api/forget-key',{});updateConnection();});
 $('new-research').onclick=mainView;$('retry').onclick=()=>{mainView();openKey(false);};
 $('resume-analysis').onclick=()=>action($('resume-analysis'),async()=>{
   state=await api('/api/resume-analysis',{});researchView();await poll();

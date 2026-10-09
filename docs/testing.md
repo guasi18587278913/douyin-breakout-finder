@@ -85,7 +85,7 @@ ASD 官方原文直接请求返回403，依据官方检索摘录借用清晰表�
 
 ## 尚未完成的体验项
 
-用户早先提出的“自动记住 TikHub Key、下次免填”尚未实现。目前 Key 仅保存在本轮进程内存，研究结束后清除。持久保存位置及“忘记 Key”的方案尚待确认，不得把已完成的隐私说明当作已实现自动保存。
+此前“自动记住 Key”尚未实现；用户已随后确认私密目录保存方案，目前已实现并进入假密钥与页面验收，结果见后续记录。
 
 ## 交付准备检查
 
@@ -94,3 +94,19 @@ ASD 官方原文直接请求返回403，依据官方检索摘录借用清晰表�
 本机分析入口就绪检查：Codex 可用；Claude Code 已安装但未通过订阅登录方式检查；CodeBuddy 未安装。因此本轮无法在本机声称后两种客户端的真实账户闭环已通过。
 
 README 已移除不存在的 PDF 手册链接，并纠正“缺少视频正文只能生成阶段稿”的过时说明。本地文档链接检查与源码语法解析通过；未修改现有 CI 配置。
+
+## 可选 Key 保存验收
+
+用户已授权私密目录保存与“忘记 Key”，功能已实现。API只有显式 `remember=true` 才写入；页面默认勾选并显示保存说明。记住的文件位于独立数据目录的 private 子目录，源码目录内禁用持久保存。POSIX目录0700、文件0600，读取检查所有者、权限、链接和大小；Windows使用当前用户DPAPI加密。保存为原子替换，忘记仅移除本应用保存的 Key，不删除研究记录。结束会话清理内存副本，不删除已记住的文件。
+
+- `python3 -m unittest discover -s tests -p test_credentials.py -v`：17项通过、0失败，Windows原生DPAPI 1项在macOS跳过，退出0。
+- `PYTHONPATH=scripts:tests python3 -m unittest test_product test_analyst test_selection_report -q`：55项通过、0失败，退出0。
+- `python3 tests/browser_credentials.py artifacts/credentials-acceptance/browser`：6项通过，覆盖保存、重启、忘记、仅本轮使用和手机布局。
+- `browser_auto.py` 3项、`browser_e2e.py` 13项通过。浏览器检查均退出0、0失败，全部用假Key。
+- 新版64个源文件的隔离副本检查4项通过，禁用第三方Python库后启动和免费报告仍正常。
+- JavaScript类型检查、语法检查与差异检查退出0。
+- 独立安全审查未发现密钥泄漏、同源绕过或存储阻塞；假Key定向复核14项通过、0失败，退出0。Windows部分只有源码审查，仍等待Windows原生检查。
+
+保护机制依据：[Microsoft DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)。不使用允许机器上所有用户解密的 LOCAL_MACHINE 标志。
+
+已打开一次“AI自媒体”的真实调研输入页，费用和次数已获用户授权。此处记录完成时尚未输入真实Key，未发起付费查询；真实结果将另行记录，不与上述模拟检查混用。

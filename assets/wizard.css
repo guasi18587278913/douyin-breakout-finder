@@ -50,3 +50,6 @@ footer{justify-content:flex-end}
 .author-link:hover{color:var(--fg)}
 .author-external{font-size:14px;line-height:1}
 @media(max-width:760px){.author{gap:12px;font-size:11px}.author-link{min-height:40px;padding-left:12px;font-size:11px}}
+
+/* Local credential preference and removal, without showing the credential. */
+.key-remember{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.6;margin:14px 0 18px}.key-remember input{width:16px;height:16px;min-height:0;padding:0;margin:0;accent-color:#765536}.saved-key-status{display:flex;align-items:center;justify-content:center;gap:12px;color:var(--muted);font-size:11px;margin:14px 0}.saved-key-status button{color:inherit;background:transparent;border:0;border-bottom:1px solid currentColor;padding:3px 0;font-size:11px;cursor:pointer}.saved-key-status[hidden]{display:none}#key-notice{color:var(--muted)}
