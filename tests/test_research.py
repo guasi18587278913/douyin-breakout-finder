@@ -120,16 +120,7 @@ class BridgeContract(unittest.TestCase):
         fixture['queries']['FDE']=list(dict.fromkeys(vid for rows in fixture['queries'].values() for vid in rows))
         quote={'source_url':'https://tikhub.io/pricing','checked_at':now(),'usd_per_request':{k:'0.001' for k in ['search','posts','stats','comments']}}
         def fake_client(store,**kwargs):
-            replay=ReplayClient.__new__(ReplayClient);replay.store=store;replay.fixture=fixture
-            original=replay.call
-            def recorded(op,params):
-                before=len(store.reservations());result=original(op,params)
-                if len(store.reservations())>before:
-                    from core import digest
-                    store.event({'event':'request','operation':op,'params':params,'key':digest({'op':op,'params':params})})
-                return result
-            replay.call=recorded
-            return replay
+            replay=ReplayClient.__new__(ReplayClient);replay.store=store;replay.fixture=fixture;return replay
         with tempfile.TemporaryDirectory() as temp:
             session=Session(Path(temp)/'data',Path(temp)/'bridge',bridge_timeout=10)
             session.mode='live';session.key='SYNTHETIC-NOT-REAL'

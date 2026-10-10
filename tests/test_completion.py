@@ -103,7 +103,8 @@ class CompletionEvidence(unittest.TestCase):
         key=digest({'op':'search','params':record['params']})
         self.store.event({'event':'request','operation':'search','params':{'keyword':'forged'},'key':key})
         report=audit_run(self.store.root,require_report=False)
-        self.assertEqual(next(c['status'] for c in report['checks'] if c['id']=='request:'+key),'FAIL')
+        self.assertIn('FAIL',[c['status'] for c in report['checks'] if c['id']=='request:'+key])
+        self.assertFalse(report['completion']['quantity']['verified'])
 
     def test_a_consistent_forged_statistics_projection_still_fails_raw_cache_check(self):
         from workflow import verification_fingerprint

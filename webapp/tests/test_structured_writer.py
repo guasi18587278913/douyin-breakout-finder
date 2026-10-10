@@ -140,7 +140,7 @@ class StructuredTests(unittest.TestCase):
         self.store.state['config_hash']=digest(self.store.config);self.store.save();self.run_it(self.model());summary=render(self.store)
         self.assertFalse(summary['delivery_target_met']);self.assertFalse(summary['quantity_target_met'])
         self.assertEqual(summary['delivery_target_count'],20)
-        # Real demo fixtures omit 'request' events; this check only targets the new independent count fields.
+        # Count fields are recomputed independently from the synthetic cache.
         count=next(c for c in audit_run(self.store.root)['checks'] if c['id']=='summary-counts');self.assertEqual(count['status'],'PASS')
 
 if __name__=='__main__':unittest.main()

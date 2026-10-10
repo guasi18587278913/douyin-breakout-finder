@@ -146,7 +146,7 @@ class SelectionReportContract(unittest.TestCase):
         from unittest.mock import patch
         before=(self.store.root/'summary.json').read_bytes()
         accept_research(self.store,self.answer)
-        with patch('report.Path.write_text',side_effect=OSError('disk full')), self.assertRaises(OSError):
+        with patch('report.Path.write_bytes',side_effect=OSError('disk full')), self.assertRaises(OSError):
             render(self.store)
         self.assertEqual((self.store.root/'summary.json').read_bytes(),before)
 

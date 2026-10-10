@@ -122,20 +122,23 @@ class AdapterContract(unittest.TestCase):
                 s.worker.join(10)
                 self.assertFalse(s.worker.is_alive())
                 self.assertIsNone(s.bridge)
-                self.assertEqual(s.status, 'done', s.message)
+                self.assertEqual(s.status, 'report_ready', s.message)
                 self.assertTrue(s.summary['report_complete'])
                 self.assertIsNone(s.key)
-                self.assertIn('自动生成的离线合成报告', (s.run_dir / 'report.html').read_text(encoding='utf-8'))
+                self.assertIn('把一个具体任务讲清楚', (s.run_dir / 'report.html').read_text(encoding='utf-8'))
+                self.assertEqual(read_json(s.run_dir/'state.json')['research']['headline'],'自动生成的离线合成报告')
 
     def test_title_only_selection_analysis_finishes_without_claiming_video_body(self):
         with tempfile.TemporaryDirectory() as temp, offline_analyst(), offline_data(with_body=False):
             s = Session(temp, assistant_mode='codex', bridge_timeout=5)
             s.mode, s.key = 'live', 'SYNTHETIC'
             s.start({'description': 'FDE', 'consent': True}); s.worker.join(10)
-            self.assertEqual(s.status, 'done', s.message)
+            self.assertEqual(s.status, 'report_ready', s.message)
             self.assertTrue(s.summary['report_complete'])
             self.assertEqual(s.summary['report_format'], 'selection-report-v1')
-            self.assertIn('依据标题与简介', (s.run_dir / 'report.html').read_text(encoding='utf-8'))
+            cases=read_json(s.run_dir/'state.json')['research']['cases']
+            self.assertTrue(cases)
+            self.assertTrue(all(case['basis']=='title-description' for case in cases.values()))
             self.assertFalse(s.snapshot()['can_resume'])
             with self.assertRaises(StopRun):
                 s.resume_analysis()
@@ -155,7 +158,7 @@ class AdapterContract(unittest.TestCase):
             self.assertEqual(s.summary['qualified_count'], 0)
             with patch('wizard.TikHubClient', side_effect=AssertionError('no paid calls')):
                 s.resume_analysis(); s.worker.join(10)
-            self.assertEqual(s.status, 'done', s.message)
+            self.assertEqual(s.status, 'report_ready', s.message)
             self.assertGreater(s.summary['qualified_count'], 0)
             self.assertEqual((s.run_dir / 'requests.jsonl').read_bytes(), before)
 
@@ -175,7 +178,7 @@ class AdapterContract(unittest.TestCase):
             before = (root / 'requests.jsonl').read_bytes()
             with patch('wizard.TikHubClient', side_effect=AssertionError('retry cannot query')), patch('wizard.fetch_prices', side_effect=AssertionError('retry cannot fetch prices')):
                 s.resume_analysis(); s.worker.join(10)
-            self.assertEqual(s.status, 'done', s.message)
+            self.assertEqual(s.status, 'report_ready', s.message)
             self.assertEqual(s.run_dir, root)
             self.assertEqual((root / 'requests.jsonl').read_bytes(), before)
 

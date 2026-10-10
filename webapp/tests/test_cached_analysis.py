@@ -28,15 +28,6 @@ class CachedTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         self.source,_=run_demo(self.root/'original')
-        records={p.stem:read_json(p) for p in (self.source.root/'cache').glob('*.json')}
-        events=[]
-        for event in self.source.events:
-            events.append(event)
-            if event['event']=='reserved':
-                rec=records[event['key']]
-                events.append({'event':'request','key':event['key'],'operation':rec['operation'],'params':rec['params'],'at':event['at']})
-        (self.source.root/'requests.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
-        self.source.events=self.source._events()
         self.source.state['research']={'sentinel':'MANUAL_STORY_MUST_NOT_BE_READ'}
         self.source.state['analyses']={'sentinel':'MANUAL_ANALYSIS_MUST_NOT_BE_READ'}
         for v in self.source.state['candidates'].values():v['review']={'decision':'include','reason':'MANUAL_REVIEW_MUST_NOT_BE_READ'}

@@ -19,6 +19,7 @@ class ReplayClient:
         if cached:
             return cached['data']
         self.store.reserve(op, key)
+        self.store.event({'event':'request','operation':op,'key':key,'params':params,'demo':True})
         f = self.fixture
         if op == 'search':
             ids = f['queries'][params['keyword']]
