@@ -165,11 +165,12 @@ class RemoteAnalyst(LocalAnalyst):
             if choice.get('finish_reason')!='stop':
                 self.diagnostic(attempt,'output-error',{'finish_reason':choice.get('finish_reason'),'error':'incomplete_output'})
                 raise StopRun('Model output incomplete.')
-            try:answer=json.loads(content)
-            except (ValueError,TypeError):
-                self.diagnostic(attempt,'output-error',{'error':'invalid_json','characters':len(content) if isinstance(content,str) else None})
+            from webapp.model_json import decode_object, ModelJSONError
+            try:answer,normalizations=decode_object(content)
+            except ModelJSONError as error:
+                self.diagnostic(attempt,'output-error',{'error':'invalid_json','characters':len(content) if isinstance(content,str) else None,
+                                                        'syntax':error.detail})
                 raise StopRun('Expected valid JSON.') from None
-            if not isinstance(answer,dict):raise StopRun('Expected a JSON object.')
             # A provider must not get its own credential into persisted report material.
             def contains_key(value):
                 if isinstance(value,str):return self.key in value
@@ -179,7 +180,7 @@ class RemoteAnalyst(LocalAnalyst):
             if contains_key(answer):
                 self.diagnostic(attempt,'output-error',{'error':'privacy_check_failed'})
                 raise AssistanceNeeded('模型输出未通过隐私检查。')
-            self.diagnostic(attempt,'raw-output',{'finish_reason':choice.get('finish_reason'),'content':content})
+            self.diagnostic(attempt,'raw-output',{'finish_reason':choice.get('finish_reason'),'content':content,'format_normalizations':normalizations})
             answer_hash=hashlib.sha256(json.dumps(answer,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
             self.diagnostic(attempt,'response',{'request_hash':plan['request_hash'],'answer':answer})
             outcome='received';return answer
