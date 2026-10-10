@@ -39,7 +39,7 @@ def opening(store, story):
     count = len(ids)
     which = {1: '这条', 2: '这两条', 3: '这三条', 4: '这四条', 5: '这五条'}[count]
     followers = [v.get('followers') for v in targets]
-    prefix = '%s讲%s的视频' % (which, (' ' + topic + ' ') if re.search('[A-Za-z]', topic) else topic)
+    prefix = '%s作品' % which
     if any(v is None for v in followers):
         return prefix + '，有几个值得参考的选题切口。'
     ceiling = (int(max(followers)) // 1000 + 1) * 1000
