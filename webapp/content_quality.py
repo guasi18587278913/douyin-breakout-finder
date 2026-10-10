@@ -134,6 +134,9 @@ def reviewed_generation(model, stage, packet, store, accept, report_of=lambda an
                 frozen=identities(draft)
                 from research import report_state
                 report=normalized_report(report_state(store)['story'])
+                if store.config.get('reader_copy_required') is True:
+                    from webapp.reader_copy import validate_reader_copy
+                    validate_reader_copy({k:report[k] for k in ('title','intro','lessons','closing')})
                 if len(json.dumps(report,ensure_ascii=False,separators=(',',':')).encode())>REPORT_BYTE_LIMIT:
                     raise ValidationIssue('$','正文过长，请保留具体解释并压缩至总共6000个中文字以内。')
                 audit_packet=packet_for(report,evidence_for(store,report),store.config['scope'])
@@ -184,6 +187,9 @@ def verify_saved(store):
     report=normalized_report(story)
     try:
         packet=packet_for(report,evidence_for(store,report),store.config['scope'])
+        if store.config.get('reader_copy_required') is True:
+            from webapp.reader_copy import validate_reader_copy
+            validate_reader_copy({k:report[k] for k in ('title','intro','lessons','closing')})
         return (saved.get('passed') is True and saved.get('protocol')==PROTOCOL and saved.get('packet')==packet
                 and not validate(packet,saved['verdict']) and verify_model_trace(store,saved))
     except (KeyError,ValueError,TypeError,StopRun):return False

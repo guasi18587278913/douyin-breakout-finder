@@ -90,6 +90,49 @@ class StructuredTests(unittest.TestCase):
         self.assertNotIn('featured_count',self.packet)
         self.assertIn('每个方法只选1个代表案例',messages_for(self.packet)[0]['content'])
         self.run_it(self.model());self.assertTrue(verify_saved(self.store))
+    def test_v2_request_and_receipt_remain_compatible(self):
+        self.packet=packet_for(self.store,protocol='report-sections-v2')
+        self.assertIn('featured_count',self.packet)
+        self.assertIn('系统会用真实数据生成开场统计',messages_for(self.packet)[0]['content'])
+        self.run_it(self.model());self.assertTrue(verify_saved(self.store))
+    def test_new_writer_uses_reader_rules_and_blocks_internal_copy(self):
+        self.assertEqual(self.packet['protocol'],'report-sections-v3')
+        prompt=messages_for(self.packet)[0]['content']
+        self.assertNotIn('少于20篇须明确说明',prompt)
+        self.assertNotIn('系统会用真实数据生成开场统计',prompt)
+        for text in ('本轮共找到18篇合格作品。','尚未达到本轮20–30篇的结果池目标。',
+                     '3篇精选解读','2个选题方法','预算与数据边界','本报告依据作品标题和简介分析选题。',
+                     '本轮查询了250次，下面展示筛选结果。','本报告已通过模型审核。','本轮模型调用费用为0.1美元。'):
+            body=copy.deepcopy(self.body);body['intro']=[text]
+            with self.subTest(text=text),self.assertRaises(ValidationIssue) as raised:assemble(self.packet,body)
+            self.assertEqual(raised.exception.feedback['path'],'$.intro[0]')
+        body=copy.deepcopy(self.body);body['intro']=['如果拍摄预算有限，可以先用家里的台灯试一个具体画面。']
+        assemble(self.packet,body)
+        body['intro']=['本次预算只有100元，先用一盏台灯拍完这条产品演示。']
+        assemble(self.packet,body)
+    def test_internal_copy_is_repaired_before_audit_without_changing_other_prose(self):
+        self.body['intro']=['本轮共找到18篇合格作品。']
+        self.run_it(self.model());self.assertEqual(len(self.calls),3)
+        self.assertTrue(verify_saved(self.store))
+        self.assertEqual(self.store.state['research']['closing'],self.body['closing'])
+    def test_fresh_website_writer_delivers_the_clean_default_template(self):
+        from unittest.mock import Mock
+        from webapp.engine import HostedSession
+        from webapp.cached_analysis import packet_for as cached_packet,messages_for as cached_messages
+        from report import render
+        self.store.config['reader_copy_required']=True;self.store.state['config_hash']=digest(self.store.config)
+        atomic_json(self.store.root/'config.json',self.store.config);self.store.save()
+        session=HostedSession(self.root,Mock(),{'id':'synthetic-reader-check'})
+        session.assistant=self.model();session.active_store=self.store
+        session.write_report(self.store);html=render(self.store,write=False)
+        self.assertTrue(verify_saved(self.store))
+        for token in ('class="selection-summary"','class="selection-index"','class="selection-opening"',
+                      'class="data-appendix"','预算与数据边界','本报告依据'):
+            self.assertNotIn(token,html)
+        resumed=cached_packet(self.store)
+        self.assertTrue(resumed['reader_copy_required'])
+        self.assertIn('面向读者的正文不写内部流程说明',cached_messages(resumed)[0]['content'])
+        self.assertNotIn('少于20篇须明确说明',cached_messages(resumed)[0]['content'])
     def test_approved_fourteen_is_distinct_from_long_term_twenty(self):
         from report import render
         from verification import audit_run

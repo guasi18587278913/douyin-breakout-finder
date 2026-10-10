@@ -131,6 +131,7 @@ class Worker:
                     config=config_for(session.answers,prices,'0.50');config['max_requests']=50
                     config['stats_strategy']='adaptive_fast'
                     config['content_review_required']=True
+                    config['reader_copy_required']=True
                     check=type('PriceCheck',(),{'config':config})()
                     Store.pricing_ready(check,['search','posts','stats','stats_bulk','comments'])
             if job['mode']=='live' and job['resume_only']:

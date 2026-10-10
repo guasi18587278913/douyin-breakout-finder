@@ -80,6 +80,29 @@ class QualityTests(unittest.TestCase):
         self.assertTrue(verify_saved(self.store));self.assertEqual(len(self.calls),4)
         receipt=read_json(self.store.root/'content-review.json')
         self.assertIn('text',receipt['verdict']['checks'][0])
+    def test_new_reader_rule_applies_to_shared_generation_before_quality_review(self):
+        self.store.config['reader_copy_required']=True
+        self.store.state['config_hash']=digest(self.store.config)
+        atomic_json(self.store.root/'config.json',self.store.config);self.store.save()
+        self.answer['intro']=['本轮共找到18篇合格作品。']
+        self.run_it(self.model());self.assertEqual(len(self.calls),3)
+        self.assertTrue(verify_saved(self.store))
+        self.assertNotIn('本轮共找到',self.store.state['research']['intro'][0])
+    def test_reader_guard_does_not_reject_fixed_topic_or_creative_budget(self):
+        from unittest.mock import patch
+        import webapp.reader_copy as reader
+        self.store.config['reader_copy_required']=True
+        self.store.state['config_hash']=digest(self.store.config)
+        atomic_json(self.store.root/'config.json',self.store.config);self.store.save()
+        self.answer['intro']=['本次预算只有100元，先用一盏台灯拍完这条产品演示。']
+        seen=[]
+        def checked(prose):
+            seen.append(set(prose));return reader_validate(prose)
+        reader_validate=reader.validate_reader_copy
+        with patch('webapp.reader_copy.validate_reader_copy',side_effect=checked):
+            self.run_it(self.model());self.assertTrue(verify_saved(self.store))
+        self.assertTrue(seen)
+        self.assertTrue(all(keys=={'title','intro','lessons','closing'} for keys in seen))
     def test_second_failure_no_publication_no_third_writer_even_after_restart(self):
         model=self.model(always_fail=True);before=copy.deepcopy(self.store.state)
         with self.assertRaises(AssistanceNeeded):self.run_it(model)
