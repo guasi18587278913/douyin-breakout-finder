@@ -24,4 +24,12 @@ class ModelJSONTests(unittest.TestCase):
         result,changes=decode_object(json.dumps(original,ensure_ascii=False))
         self.assertEqual(result,original);self.assertEqual(changes,[])
 
+class ProviderTagTests(unittest.TestCase):
+    def test_only_redundant_provider_type_is_removed_without_changing_content(self):
+        from webapp.model_json import protocol_object
+        value={'type':'json_object','reviews':[['123','include','真实的原判断']], 'next_keywords':[]}
+        self.assertEqual(protocol_object(value),{'reviews':value['reviews'],'next_keywords':[]})
+        self.assertEqual(value['type'],'json_object')
+        self.assertEqual(protocol_object({'type':'unexpected','reviews':[]}),{'type':'unexpected','reviews':[]})
+
 if __name__=='__main__':unittest.main()

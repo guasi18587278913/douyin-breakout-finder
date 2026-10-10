@@ -240,9 +240,18 @@ def run_cached(session, source):
             except FileExistsError:
                 prior=read_json(marker,{})
                 relative=Path(prior.get('replay_dir',''))
-                if (prior.get('approval_sha256')!=digest(approved) or prior.get('phase') not in ('writing','complete') or relative.is_absolute() or len(relative.parts)!=2
+                recovering_reviews=prior.get('phase')=='received-review-recovery'
+                if (prior.get('approval_sha256')!=digest(approved) or prior.get('phase') not in ('writing','complete','received-review-recovery') or relative.is_absolute() or len(relative.parts)!=2
                     or not relative.parts[0].startswith('automatic-replay-') or relative.parts[1]!='research'):
                     raise StopRun('之前的自动扩充尚未完成，保留原记录；不会换分支重新收费。')
+                if recovering_reviews:
+                    if prior.get('data_journal_sha256')!=hashlib.sha256(journal_before).hexdigest():raise StopRun('接续前数据账本已变化，未重新开启查询。')
+                    model.require_known_outcomes()
+                    from webapp.expanded_analysis import expand
+                    expand(session,source,replay)
+                    prior.update(phase='writing',replay_dir=str(replay.root.relative_to(source.root.parent)))
+                    atomic_json(marker,prior)
+                    relative=Path(prior['replay_dir'])
                 saved=source.root.parent/relative
                 if saved.is_symlink() or not saved.resolve().is_relative_to(source.root.parent.resolve()):raise StopRun('接续目录不符合原记录。')
                 replay=Store(saved)

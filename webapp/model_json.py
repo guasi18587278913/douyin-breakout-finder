@@ -59,3 +59,10 @@ def decode_object(content):
         return True
     if not valid_controls(answer):raise ModelJSONError('unsupported_control_character')
     return answer,changes
+
+
+def protocol_object(value):
+    """Ignore only the provider's redundant response-format tag; preserve all content."""
+    if isinstance(value,dict) and value.get('type') in ('object','json_object'):
+        return {key:item for key,item in value.items() if key!='type'}
+    return value

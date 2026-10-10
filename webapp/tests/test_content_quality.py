@@ -48,6 +48,7 @@ class QualityTests(unittest.TestCase):
                 if drafts:answer['intro']=['修正后，这个案例把原本分散的执行任务整理到一个具体问题里。']
                 if drafts and swap_case:answer['lessons'][0]['cases'][0]['evidence_ids'].append('invalid')
                 drafts.append(answer)
+            if getattr(self,'provider_tag',False):answer={'type':'json_object',**answer}
             return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps(answer,ensure_ascii=False)}}],
                 'usage':{'prompt_tokens':100,'completion_tokens':200}})
         return RemoteAnalyst(threading.Event(),'SYNTHETIC-KEY-ONLY',self.root/'model-events.jsonl',httpx.MockTransport(send),settle_usage=True)
@@ -69,6 +70,7 @@ class QualityTests(unittest.TestCase):
         with self.assertRaises(StopRun):self.run_it(self.model(invalid_review=True))
         self.assertEqual(len(self.calls),2)
     def test_whitespace_is_normalized_before_review_and_fake_receipt_is_rejected(self):
+        self.provider_tag=True
         self.answer['intro'][0]='  '+self.answer['intro'][0]+'  '
         self.run_it(self.model());self.assertTrue(verify_saved(self.store))
         saved=read_json(self.store.root/'content-review.json');saved['draft_attempt']=998;saved['review_attempt']=999

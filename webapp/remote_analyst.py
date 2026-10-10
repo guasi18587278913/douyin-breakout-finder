@@ -196,7 +196,9 @@ class RemoteAnalyst(LocalAnalyst):
         plan=self.plan(stage,packet,feedback)
         if plan.get('reuse_attempt'):
             previous,answer=self.reusable_response(plan['request_hash'],self.entries())
-            self.last_attempt=previous['id'];return answer
+            self.last_attempt=previous['id']
+            from webapp.model_json import protocol_object
+            return protocol_object(answer)
         rows=self.entries()
         if self.cancelled.is_set():raise AssistanceNeeded('研究已停止。')
         attempt=sum(r['kind']=='reserve' for r in rows)+1
@@ -248,7 +250,9 @@ class RemoteAnalyst(LocalAnalyst):
             self.diagnostic(attempt,'raw-output',{'finish_reason':choice.get('finish_reason'),'content':content,'format_normalizations':normalizations})
             answer_hash=hashlib.sha256(json.dumps(answer,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
             self.diagnostic(attempt,'response',{'request_hash':plan['request_hash'],'answer':answer})
-            outcome='received';return answer
+            outcome='received'
+            from webapp.model_json import protocol_object
+            return protocol_object(answer)
         except httpx.HTTPError:
             raise AssistanceNeeded('研究助手连接中断，已保留数据；不会自动重发这次请求。') from None
         finally:

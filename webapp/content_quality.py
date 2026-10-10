@@ -202,7 +202,8 @@ def verify_model_trace(store,saved):
             raw=json.dumps(response.get('answer'),ensure_ascii=False,separators=(',',':')).encode()
             if (response.get('request_hash')!=starts[0].get('request_hash')
                 or hashlib.sha256(raw).hexdigest()!=ends[0].get('answer_sha256')):return False
-            responses[attempt]=response['answer'];reserves[attempt]=starts[0]
+            from webapp.model_json import protocol_object
+            responses[attempt]=protocol_object(response['answer']);reserves[attempt]=starts[0]
         if responses[review]!=saved['verdict']:return False
         expected=messages_for(saved['packet'])
         request_hash=hashlib.sha256(json.dumps({'stage':'content-value-review','messages':expected},ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
