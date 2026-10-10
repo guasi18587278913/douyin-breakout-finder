@@ -66,6 +66,17 @@ class IncrementalReview(unittest.TestCase):
         self.accept(packet)
         self.assertEqual(pending_reviews(self.store), {})
 
+    def test_recheck_packet_omits_stale_judgments_and_rule_hints(self):
+        self.add(0, 2)
+        vids = list(self.store.state['candidates'])
+        self.accept(review_packet(self.store, 0), unsure=vids[0])
+        self.store.state['candidates'][vids[1]]['title'] = '新的标题使旧判断失效'
+        packet = review_packet(self.store, 1)
+        self.assertEqual(len(packet['candidates']), 2)
+        self.assertTrue(all('review' not in row for row in packet['candidates']))
+        self.assertTrue(all(row['title'] for row in packet['candidates']))
+        self.assertEqual(len(packet['review_fingerprints']), 2)
+
     def test_omitted_or_extra_answers_do_not_change_existing_reviews(self):
         self.add(0,2);packet=review_packet(self.store,0)
         before=copy.deepcopy(self.store.state)

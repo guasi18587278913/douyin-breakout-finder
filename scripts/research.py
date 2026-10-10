@@ -9,6 +9,7 @@ from core import StopRun, atomic_json, digest, now, read_json
 from workflow import apply_review, keyword_quality, MAX_SEARCH_ROUNDS
 
 SELECTED=('qualified','limited')
+REVIEW_PACKET_VERSION = 2
 RELEVANCE_POLICY = (
     '相关性以 topic、scope 中的主题、受众和明确纳入/排除条件为准。'
     '“寻找选题、学习切入、验证方向”是使用者做研究的目的，不是候选作品必须讨论的题材。'
@@ -89,7 +90,7 @@ def add_evidence(store,vid,source,kind,note):
 def review_fingerprint(store, vid):
     """Bind semantic decisions to their input, not to an agent's completion claim."""
     candidate = store.state['candidates'][vid]
-    return digest({'review_policy': RELEVANCE_POLICY,
+    return digest({'review_policy': RELEVANCE_POLICY, 'review_packet_version': REVIEW_PACKET_VERSION,
                    'conditions': {key: store.config.get(key) for key in
                                   ('topic', 'scope', 'intake', 'max_followers')},
                    'candidate': {key: candidate.get(key) for key in
@@ -110,7 +111,7 @@ def review_packet(store,round_number):
     candidates = []
     for vid in pending:
         row = {key: store.state['candidates'][vid].get(key) for key in
-               ('id', 'title', 'author_name', 'followers', 'likes', 'queries', 'review')}
+               ('id', 'title', 'author_name', 'followers', 'likes', 'queries')}
         row['evidence'] = [{'kind': item['kind'], 'text': item['text'][:2000],
                             'truncated': len(item['text']) > 2000}
                            for item in evidence(store, vid) if item['kind'] != 'title-description']
