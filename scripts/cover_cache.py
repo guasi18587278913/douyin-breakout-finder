@@ -1,5 +1,7 @@
 """Best-effort original-cover cache. Public CDN reads only; no API key or ledger use."""
 import base64
+import hashlib
+import io
 import concurrent.futures
 import re
 from urllib.parse import urlsplit
@@ -29,6 +31,31 @@ def image_mime(raw):
     if raw.startswith(b'RIFF') and raw[8:12] == b'WEBP':
         return 'image/webp'
     return None
+
+
+def browser_image(raw):
+    mime=image_mime(raw)
+    if mime:return raw,mime,{}
+    if len(raw)<16 or raw[4:8]!=b'ftyp':return None
+    try:
+        from PIL import Image,ImageOps
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+        with Image.open(io.BytesIO(raw)) as original:
+            if original.format not in ('HEIF','AVIF') or not 0<original.width*original.height<=16000000:return None
+            image=ImageOps.exif_transpose(original)
+            image.thumbnail((1200,1200))
+            output=io.BytesIO()
+            if 'A' in image.getbands():
+                image.save(output,format='PNG');mime='image/png'
+            else:
+                image.convert('RGB').save(output,format='JPEG',quality=90);mime='image/jpeg'
+            data=output.getvalue()
+            if not 0<len(data)<=MAX_BYTES:return None
+            return data,mime,{'source_format':original.format,'source_sha256':hashlib.sha256(raw).hexdigest(),
+                              'conversion':'browser-compatible-original-cover'}
+    except (ImportError,OSError,ValueError,RuntimeError):
+        return None
 
 
 def valid_cached(entry):
@@ -71,9 +98,11 @@ def cache_covers(store, fetcher=None):
         try:
             # transport disables curl config/redirects; api_key is deliberately never supplied.
             status, raw = fetcher(url, timeout=6, limit=MAX_BYTES)
-            mime = image_mime(raw)
-            if status == 200 and 0 < len(raw) <= MAX_BYTES and mime:
-                return vid, {'mime': mime, 'base64': base64.b64encode(raw).decode('ascii'), 'cached_at': now()}
+            if status == 200 and 0 < len(raw) <= MAX_BYTES:
+                ready=browser_image(raw)
+                if ready:
+                    data,mime,metadata=ready
+                    return vid, {'mime': mime, 'base64': base64.b64encode(data).decode('ascii'), 'cached_at': now(),**metadata}
         except Exception:
             pass  # A failed cover never turns an otherwise valid report into a pending task.
         return vid, entry
