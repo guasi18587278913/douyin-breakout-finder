@@ -71,6 +71,7 @@ def render(store, write=True):
             'comparison_window_days', 'min_age_days', 'search_days')},
         'candidate_count': len(s['candidates']), 'selected_count': len(eligible) if editorial else len(selected),
         'qualified_count': len(eligible) if editorial else sum(r['status'] == 'qualified' for r in results),
+        'quantity_target_min':20,'quantity_target_met':len(eligible)>=20 if editorial else False,
         'limited_count': sum(r['status'] == 'limited' for r in results),
         'pending_count': sum(r['status'] == 'pending' for r in results),
         'request_attempts': len(reservations), 'failed_attempts': len(failures),

@@ -52,10 +52,18 @@ def audit_run(root, require_report=True):
         for video in record['data']['videos']:
             (source_ids if within_search(video, config, stamp(state['as_of'])) else filtered_ids).add(video['id'])
     queried_ids = {vid for query in state['queries'].values() for vid in query.get('ids', [])}
-    check('candidate-accounting', source_ids == set(candidates) == queried_ids,
+    history_ids=set()
+    if config.get('discover_author_history'):
+        from history_discovery import from_cache
+        history=from_cache(store);history_ids=set(history)
+        fields=('id','title','author_id','followers','author_name','published_at','discovery')
+        check('history-provenance',all(vid in candidates and all(candidates[vid].get(k)==v.get(k) for k in fields) for vid,v in history.items()),
+              {'history_candidate_count':len(history),'source':'同作者原始作品页与搜索取得的账号快照'})
+    all_source_ids=source_ids|history_ids
+    check('candidate-accounting', all_source_ids == set(candidates) and source_ids == queried_ids,
           {'saved_in_scope': len(source_ids), 'candidates': len(candidates), 'query_ids': len(queried_ids),
-           'missing_candidate_ids': sorted(source_ids - set(candidates)),
-           'unbacked_candidate_ids': sorted(set(candidates) - source_ids),
+           'missing_candidate_ids': sorted(all_source_ids - set(candidates)),
+           'unbacked_candidate_ids': sorted(set(candidates) - all_source_ids),
            'query_mismatch_ids': sorted(queried_ids ^ source_ids),
            'outside_date_window_ids': sorted(filtered_ids - source_ids)})
     check('result-identities', set(results) <= set(candidates)
@@ -119,6 +127,9 @@ def audit_run(root, require_report=True):
                 valid_contract = validated['status'] == 'complete' and validated['cases'] == story.get('cases')
             except (StopRun, ValueError, TypeError, KeyError):
                 pass
+        if config.get('content_review_required'):
+            from webapp.content_quality import verify_saved
+            check('content-value-review',verify_saved(store),{'scope':'独立模型逐段语义审核，正文与证据摘要绑定；不代表人的阅读体验验收'})
         check('report-contract', valid_contract, {'revalidated_from_saved_answer': valid_contract})
         check('report-ready', readiness['status'] == 'complete' and summary.get('report_complete') is True
               and summary.get('report_format') == FORMAT,
@@ -143,6 +154,7 @@ def audit_run(root, require_report=True):
             check('original-video-links', all('https://www.douyin.com/video/' + vid in html.links for vid in eligible),
                   {'required_links': len(eligible)})
         expected = {'candidate_count': len(candidates), 'qualified_count': len(eligible),
+                    'quantity_target_min':20,'quantity_target_met':len(eligible)>=20,
                     'featured_count': len((readiness.get('story') or {}).get('cases', {})),
                     'request_attempts': len(reservations),
                     'pending_count': sum(r.get('status') == 'pending' for r in results.values())}

@@ -57,9 +57,13 @@ class CachedTests(unittest.TestCase):
     def model(self, answer=None, status=200):
         if answer is None:answer=self.response(self.packet)
         def send(request):
-            self.calls.append(json.loads(request.content))
+            payload=json.loads(request.content);self.calls.append(payload)
+            actual=answer
+            if '独立内容编辑' in payload['messages'][0]['content']:
+                from quality_fixture import verdict
+                actual=verdict(json.loads(payload['messages'][1]['content']))
             if status!=200:return httpx.Response(status,json={'error':'synthetic failure'})
-            return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps(answer)}}],
+            return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps(actual)}}],
                                             'usage':{'prompt_tokens':100,'completion_tokens':200}})
         return RemoteAnalyst(self.cancel,'SYNTHETIC-MODEL-KEY-ONLY',self.ledger,httpx.MockTransport(send))
 
@@ -179,8 +183,13 @@ class CachedTests(unittest.TestCase):
         self.assertTrue(recover_publication(self.source.root))
         for name,raw in before.items():self.assertEqual((self.source.root/name).read_bytes(),raw)
         self.assertFalse(recover_publication(self.source.root))
+        # A durable replay can publish again after rollback without overwriting the old backup.
+        begin_publication(self.source.root,replay/'previous')
+        with self.assertRaises(StopRun):begin_publication(self.source.root,replay/'previous')
+        self.assertTrue(recover_publication(self.source.root))
+        for name,raw in before.items():self.assertEqual((self.source.root/name).read_bytes(),raw)
 
-    def test_complete_worker_path_needs_one_model_call_and_no_data_client(self):
+    def test_complete_worker_path_needs_writer_and_review_but_no_data_client(self):
         class DB:
             def progress(*args):pass
         session=HostedSession(self.root/'session',DB(),{'id':'synthetic'})
@@ -188,7 +197,7 @@ class CachedTests(unittest.TestCase):
         journal=(self.source.root/'requests.jsonl').read_bytes()
         with patch('tikhub.TikHubClient',side_effect=AssertionError('No paid data client allowed')):
             run_cached(session,self.source)
-        self.assertEqual(session.status,'done');self.assertEqual(len(self.calls),1)
+        self.assertEqual(session.status,'done');self.assertEqual(len(self.calls),2)
         self.assertEqual(journal,(self.source.root/'requests.jsonl').read_bytes())
         receipt=read_json(self.source.root/'automatic-receipt.json')
         self.assertFalse(receipt['prior_reviews_used']);self.assertFalse(receipt['prior_story_used'])

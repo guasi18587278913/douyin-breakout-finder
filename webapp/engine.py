@@ -36,6 +36,16 @@ class HostedSession(Session):
     def __init__(self,folder,db,job):
         super().__init__(folder,assistant_mode='host')
         self.db,self.job,self.stage=db,job,'prepare'
+    def write_report(self,store):
+        from research import analysis_packet, accept_research, pending_reviews
+        from selection_report import FORMAT
+        from webapp.content_quality import reviewed_generation
+        if any(store.state['candidates'][vid]['review'].get('decision') in ('include','exclude') for vid in pending_reviews(store)):
+            self.refresh_review(store)
+        packet=analysis_packet(store)
+        return self.timed('write',lambda:reviewed_generation(self.assistant,'content-analysis',packet,store,
+            lambda answer:accept_research(store,answer,expected_format=FORMAT)))
+
     def timed(self,stage,action):
         self.stage=stage
         self.db.progress(self.job['id'],STAGES.get(stage,'正在整理研究结果'),public_progress(self))
@@ -103,7 +113,9 @@ class Worker:
                 keys=self.vault.get()
                 if not keys.get('deepseek_key') or (not job['resume_only'] and not keys.get('tikhub_key')):
                     raise StopRun('研究服务尚未配置完成，请联系管理员。')
-                session.automatic=RemoteAnalyst(session.cancelled,keys['deepseek_key'],folder/'model-events.jsonl')
+                from webapp.approval import approved
+                approval=approved(folder)
+                session.automatic=RemoteAnalyst(session.cancelled,keys['deepseek_key'],folder/'model-events.jsonl',settle_usage=approval.get('usage_settlement') is True)
                 session.assistant=session.automatic;session.key=keys.get('tikhub_key')
                 if job['resume_only']:
                     lock=session.run_dir/'.run.lock'
@@ -117,6 +129,7 @@ class Worker:
                     prices=fetch_prices(include_bulk=True)
                     config=config_for(session.answers,prices,'0.50');config['max_requests']=50
                     config['stats_strategy']='adaptive_fast'
+                    config['content_review_required']=True
                     check=type('PriceCheck',(),{'config':config})()
                     Store.pricing_ready(check,['search','posts','stats','stats_bulk','comments'])
             if job['mode']=='live' and job['resume_only']:
