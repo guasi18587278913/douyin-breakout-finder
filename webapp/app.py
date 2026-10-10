@@ -187,7 +187,7 @@ def create_app(settings=None):
         if not path.is_relative_to(root) or not path.is_file():raise HTTPException(404,'报告还没有生成。')
         if filename=='report.html':
             content=path.read_text(encoding='utf-8')
-            navigation='<nav style="display:flex;justify-content:space-between;gap:20px;max-width:1120px;margin:0 auto;padding:24px 30px;font:14px sans-serif"><a href="/">← 我的研究手记</a><a id="new-research-link" href="/?new=1">新研究 ↗</a></nav>'
+            navigation='<nav class="report-site-nav" aria-label="网站导航" style="display:flex;justify-content:space-between;gap:20px;max-width:1200px;margin:0 auto;padding:24px 30px;font-size:13px"><a href="/">← 我的研究</a><a id="new-research-link" href="/?new=1">新研究 ↗</a></nav>'
             return HTMLResponse(re.sub(r'(<body(?:\s[^>]*)?>)',lambda match:match.group(0)+navigation,content,count=1))
         return FileResponse(path)
     @app.get('/api/admin')

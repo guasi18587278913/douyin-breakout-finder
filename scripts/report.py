@@ -142,7 +142,7 @@ def render(store, write=True):
     if editorial:
         css += (Path(__file__).resolve().parents[1] / 'assets/selection-report.css').read_text(encoding='utf-8')
     banner = '<div class="notice demo"><b>离线演示：全部为合成数据。</b>未联网，未读取密钥，没有真实 API 费用。示例链接不指向真实抖音视频。</div>' if demo else ''
-    content = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>''' + E(research['story']['headline'] if editorial else c['topic']) + ''' · 小号爆款报告</title><style>''' + css + '''</style></head><body''' + (' class="report-editorial"' if editorial else '') + '''><main>''' + banner
+    content = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>''' + E(research['story']['topic_label'] if editorial else c['topic']) + ''' · 小号爆款报告</title><style>''' + css + '''</style></head><body''' + (' class="report-editorial"' if editorial else '') + '''><main>''' + banner
     content += narrative(store)
     content += '<details class="data-appendix"><summary>查看统计明细、筛选口径与费用记录</summary>'
     content += '<div class="notice">筛选口径：粉丝不超过 %s；目标播放量至少为账号正常播放量的 %s 倍。对照目标 %s 条，至少 %s 条；少于目标数量单独标注。</div>' % (

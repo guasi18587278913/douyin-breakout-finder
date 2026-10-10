@@ -55,7 +55,13 @@ def original_title(v):
     return (v.get('title') or '作品标题未取得').split('\n', 1)[0][:200]
 
 
-def card(store, vid, covers):
+def display_title(v):
+    title=re.split(r'\s*#',original_title(v),maxsplit=1)[0].strip()
+    if len(title)>45 and '。' in title:title=title.split('。',1)[0]
+    return title or original_title(v)
+
+
+def card(store, vid, covers, compact_row=False):
     v = store.state['candidates'][vid]
     r = store.state['results'][vid]
     demo = store.state.get('demo', False)
@@ -67,15 +73,16 @@ def card(store, vid, covers):
     if not demo and isinstance(aid, str) and re.fullmatch(r'[A-Za-z0-9_-]{8,200}', aid):
         links += '<a href="https://www.douyin.com/user/'+E(aid)+'" target="_blank" rel="noopener noreferrer">作者主页 ↗</a>'
     status = '<span class="selection-limited">有限样本参考</span>' if r['status'] == 'limited' else ''
-    out = '<article class="selection-card" id="case-%s"><div class="selection-card-top">%s<div><h3>%s</h3><p class="selection-author">%s · %s 粉丝</p><p class="selection-date">%s 发布 %s</p><div class="selection-play"><strong>%s</strong><span>这条作品播放量</span></div><p class="selection-ratio">约为账号正常播放量的 %s 倍</p><div class="selection-links">%s</div></div></div>' % (
-        E(vid), picture, E(original_title(v)), E(v['author_name']), number(v.get('followers')), date(v.get('published_at')), status,
-        compact(r['play_count']), number(round(r['ratio'])), links)
+    out = '<article class="selection-card%s" id="case-%s"><div class="selection-card-top">%s<div class="selection-work"><h3 title="%s">%s</h3><p class="selection-author">%s · %s 粉丝</p><p class="selection-date">%s 发布 %s</p></div><dl class="selection-metrics"><div><dt>这条作品播放量</dt><dd>%s</dd></div><div><dt>账号正常播放量</dt><dd>%s</dd></div><div><dt>约为正常播放</dt><dd>%s<small>倍</small></dd></div></dl><div class="selection-links">%s</div></div>' % (
+        ' selection-row' if compact_row else '', E(vid), picture, E(original_title(v)), E(display_title(v)), E(v['author_name']), number(v.get('followers')), date(v.get('published_at')), status,
+        compact(r['play_count']), compact(r['median_plays']), number(round(r['ratio'])), links)
+    out += '<details class="selection-basis"><summary>查看完整标题与数据对照</summary><p class="selection-original-title">'+E(original_title(v))+'</p>'
     maximum = max(r['play_count'], r['median_plays'])
     out += '<div class="selection-comparison" role="img" aria-label="%s">' % E('这条作品播放量%s次，账号正常播放量%s次。' % (number(r['play_count']), number(r['median_plays'])))
     for label, value in [('这条作品播放量', r['play_count']), ('账号正常播放量', r['median_plays'])]:
         width = value / maximum * 100
         out += '<div class="selection-bar-row"><div><span>%s</span><span>%s 次</span></div><div class="selection-track"><span style="width:%.5f%%"></span></div></div>' % (label, number(value), width)
-    out += '</div><details class="selection-basis"><summary>账号正常播放量怎么来的？</summary><p>参考同一作者附近发布的 %s 条作品。按播放量排序，取中间水平，减少偶尔一条高播放作品的影响。全部为采集时累计播放，发布时间和发布后经过的天数可能不同。</p><div class="scroll"><table><thead><tr><th>参考作品</th><th>发布日期</th><th>播放量</th></tr></thead><tbody>' % len(r.get('baseline', []))
+    out += '</div><p><b>账号正常播放量怎么来的？</b><br>参考同一作者附近发布的 %s 条作品。按播放量排序，取中间水平，减少偶尔一条高播放作品的影响。全部为采集时累计播放，发布时间和发布后经过的天数可能不同。</p><div class="scroll"><table><thead><tr><th>参考作品</th><th>发布日期</th><th>播放量</th></tr></thead><tbody>' % len(r.get('baseline', []))
     for b in r.get('baseline', []):
         title = E(original_title(b))
         if not demo:
@@ -102,9 +109,11 @@ def render_selection(store, story):
     covers = read_json(store.root / 'covers.json', {})
     if not isinstance(covers, dict):
         covers = {}
-    out = '<section class="selection-report"><h1 class="selection-opening">'+E(opening(store, story))+'</h1>'
     from selection_report import eligible_ids,delivery_target
     count=len(eligible_ids(store))
+    collected = datetime.fromtimestamp(stamp(store.state['as_of']), timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+    out = '<section class="selection-report"><header class="selection-header" id="overview"><p class="selection-kicker">选题研究 · '+E(collected[:10])+'</p><h1 class="selection-title">'+E(story['topic_label'])+'<span>小号爆款研究报告</span></h1><div class="selection-summary"><div><strong>'+str(count)+'</strong><span>篇合格作品</span></div><div><strong>'+str(len(story['cases']))+'</strong><span>篇精选解读</span></div><div><strong>'+str(len(story['lessons']))+'</strong><span>个选题方法</span></div></div></header>'
+    out += '<nav class="selection-index" aria-label="报告目录"><a href="#overview">报告概览</a><a href="#featured">精选解读</a><a href="#more">更多作品</a><a href="#report-notes">数据说明</a></nav><section class="selection-intro"><h2 class="selection-section-label">本轮发现</h2><p class="selection-opening">'+E(opening(store,story))+'</p>'
     if not store.state.get('demo'):
         if delivery_target(store)<20:
             note='正文精选 '+str(len(story['cases']))+' 篇展开，其余作品列在“更多小号爆款”。'
@@ -115,22 +124,22 @@ def render_selection(store, story):
     out += ''.join('<p>'+E(p)+'</p>' for p in intro)
     if story['status'] != 'complete':
         out += '<p class="selection-incomplete">部分数据或核验没有完成，以下只交代本轮已取得的信息；不能据此判断这个主题没有爆款。</p>'
+    out+='</section><div id="featured">'
     for n, lesson in enumerate(story['lessons'], 1):
-        out += '<section class="selection-lesson"><h2>'+E(str(n)+' · '+lesson['title'])+'</h2>'
+        out += '<section class="selection-lesson"><h2><span class="selection-method-number">方法 '+str(n).zfill(2)+'</span>'+E(lesson['title'])+'</h2>'
         for case in lesson['cases']:
             vid = case['video_id']
             v = store.state['candidates'][vid]
-            r = store.state['results'][vid]
-            out += '<p class="selection-case-name">案例：《'+E(original_title(v))+'》</p>'
-            out += '<p>这条视频，本轮记录的播放量约 '+compact(r['play_count'])+'。</p>'
+            out += '<div class="selection-case"><div class="selection-case-prose"><h3 class="selection-case-name">'+E(display_title(v))+'</h3>'
             out += ''.join('<p>'+E(p)+'</p>' for p in case['paragraphs'])
-        out += '<p class="selection-borrow">💡这个思路怎么借鉴？</p>'
+            out += '</div>'+card(store,vid,covers)+'</div>'
+        out += '<div class="selection-applications"><h3 class="selection-borrow">这个思路怎么借鉴？</h3><div class="selection-examples">'
         for app in lesson['applications']:
             role = '如果你是' if any(x in app['audience'] for x in ('创作者', '博主', '老师', '教师')) else '如果你做'
             out += '<div class="selection-example"><p>'+role+E(app['audience'])+'，可以试试：</p><p>“'+E(app['idea'])+'”</p></div>'
-        out += '<p class="selection-takeaway">'+E(lesson['takeaway'])+'</p>'
-        out += ''.join(card(store, case['video_id'], covers) for case in lesson['cases'])
+        out += '</div><p class="selection-takeaway">'+E(lesson['takeaway'])+'</p></div>'
         out += '</section>'
+    out+='</div>'
     closing = story['closing'] if story['cases'] else {
         'questions': ['你想解决的具体问题是什么？', '你更想参考教程、案例，还是观点表达？'],
         'paragraphs': ['可以把主题缩小到一个具体用途，再开始下一轮研究。这份记录会保留，便于之后核对。']}
@@ -140,13 +149,13 @@ def render_selection(store, story):
     from selection_report import eligible_ids
     more = sorted(eligible_ids(store) - set(story['cases']), key=lambda vid: -(store.state['results'][vid].get('ratio') or 0))
     if more:
-        out += '<section class="selection-more"><h2>更多小号爆款</h2><p>这些作品也符合本轮筛选条件，可以继续查看原视频。</p>'
-        out += ''.join(card(store, vid, covers) for vid in more)
+        out += '<section class="selection-more" id="more"><div class="selection-more-heading"><h2>更多小号爆款 <span>'+str(len(more))+' 篇</span></h2><p>按相对账号正常播放量的倍数排序</p></div><div class="selection-list">'
+        out += ''.join(card(store, vid, covers, compact_row=True) for vid in more)+'</div>'
         out += '</section>'
-    collected = datetime.fromtimestamp(stamp(store.state['as_of']), timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+    else:out+='<div id="more"></div>'
     title_only = any(c['basis'] == 'title-description' for c in story['cases'].values())
     basis = '本轮没有足够的合格案例用于解读。' if not story['cases'] else '本报告包含依据标题与简介的选题解读。' if title_only else '案例解读引用了本轮登记的内容证据。'
-    out += '<details class="selection-notes"><summary>数据来源与解读依据</summary><p>数据采集于 '+E(collected)+'（北京时间）。'+basis+'你可以结合自己的内容尝试，实际表现还需要验证。</p><ul>'
+    out += '<details class="selection-notes" id="report-notes"><summary>数据来源与解读依据</summary><p>数据采集于 '+E(collected)+'（北京时间）。'+basis+'你可以结合自己的内容尝试，实际表现还需要验证。</p><ul>'
     limitations = story['limitations'] if story['cases'] else ['这份记录没有可供解读的充分核验案例，不据此判断整个主题的创作机会。']
     out += ''.join('<li>'+E(note)+'</li>' for note in limitations)
     out += '</ul></details></section>'

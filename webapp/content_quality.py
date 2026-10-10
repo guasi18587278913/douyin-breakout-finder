@@ -216,7 +216,9 @@ def verify_model_trace(store,saved):
         if reserves[review]['request_hash']!=request_hash:return False
         if reserves[draft]['stage']=='report-sections':
             from webapp.structured_writer import packet_for as writer_packet, resolve, assemble, messages_for as writer_messages
-            current=writer_packet(store);body=None;operation=None;offset=0
+            first_request=read_json(job/'model-diagnostics'/('attempt-%03d-request.json'%chain[0]),{})
+            protocol=json.loads(first_request['payload']['messages'][1]['content'])['packet']['protocol']
+            current=writer_packet(store,protocol=protocol);body=None;operation=None;offset=0
             if len(chain)==1 and reserves[chain[0]].get('operation',{}).get('step')=='draft-1':
                 op=reserves[chain[0]]['operation']['id']
                 failed=[r for r in rows if r.get('kind')=='reserve' and r.get('operation')=={'id':op,'step':'draft-0'}]

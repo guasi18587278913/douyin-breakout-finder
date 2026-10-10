@@ -74,6 +74,22 @@ class StructuredTests(unittest.TestCase):
         with self.assertRaises(ValidationIssue):assemble(self.packet,{**self.body,'limitations':['人工补齐']})
     def test_additional_method_cannot_change_fixed_structure(self):
         with self.assertRaises(ValidationIssue):assemble(self.packet,{**self.body,'method_2':self.body['method_1']})
+
+    def test_three_featured_cases_keep_two_methods_and_enforce_counts(self):
+        packet={**self.packet,'method_count':2,'featured_count':3}
+        body=copy.deepcopy(self.body);body['method_2']=copy.deepcopy(body['method_1'])
+        body['method_1']['cases'].append(copy.deepcopy(body['method_1']['cases'][0]))
+        answer=assemble(packet,body)
+        self.assertEqual([len(lesson['cases']) for lesson in answer['lessons']],[2,1])
+        self.assertIn('method_1选2个不同案例',messages_for(packet)[0]['content'])
+        body['method_1']['cases'].pop()
+        with self.assertRaises(ValidationIssue):assemble(packet,body)
+
+    def test_legacy_writer_receipt_remains_verifiable(self):
+        self.packet=packet_for(self.store,protocol='report-sections-v1')
+        self.assertNotIn('featured_count',self.packet)
+        self.assertIn('每个方法只选1个代表案例',messages_for(self.packet)[0]['content'])
+        self.run_it(self.model());self.assertTrue(verify_saved(self.store))
     def test_approved_fourteen_is_distinct_from_long_term_twenty(self):
         from report import render
         from verification import audit_run

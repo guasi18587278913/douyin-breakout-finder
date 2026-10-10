@@ -6,10 +6,12 @@ from core import ValidationIssue
 from selection_report import FORMAT, eligible_ids, instructions
 from research import evidence
 
-PROTOCOL='report-sections-v1'
+PROTOCOL='report-sections-v2'
+LEGACY_PROTOCOL='report-sections-v1'
 
 
-def packet_for(store):
+def packet_for(store, protocol=PROTOCOL):
+    if protocol not in (PROTOCOL,LEGACY_PROTOCOL):raise ValueError('Unknown report protocol')
     selected=sorted(eligible_ids(store))
     materials=[]
     for vid in selected:
@@ -17,8 +19,15 @@ def packet_for(store):
         for item in refs:
             item['truncated']=len(item['text'])>4000;item['text']=item['text'][:4000]
         materials.append({'video_id':vid,'title':store.state['candidates'][vid]['title'],'evidence':refs})
-    return {'protocol':PROTOCOL,'topic':store.config['topic'],'scope':store.config['scope'],
+    packet={'protocol':protocol,'topic':store.config['topic'],'scope':store.config['scope'],
             'method_count':min(2,len(selected)),'materials':materials}
+    if protocol==PROTOCOL:packet['featured_count']=min(3,len(selected))
+    return packet
+
+
+def case_counts(packet):
+    if packet['protocol']==LEGACY_PROTOCOL:return [1]*packet['method_count']
+    return [2,1] if packet['featured_count']==3 else [1]*packet['method_count']
 
 
 def keys(packet):
@@ -52,6 +61,11 @@ def messages_for(packet, feedback=''):
       '其他合格作品由程序完整展示，不需要逐条写。先说案例的具体处境和题眼，再解释为什么可以借鉴，最后给下一条可拍内容。'
       '只凭标题与简介分析选题，不编造视频口播、镜头、流程细节或传播因果。所有正文不填写播放数、粉丝数和倍数。'
       '下面标准和样稿只参考口吻、展开程度与证据边界；输出结构必须使用上面的固定字段，不能照搬样稿结构。\n'+instructions())
+    if packet['protocol']==PROTOCOL:
+        counts=case_counts(packet)
+        rule='；'.join('method_%s选%s个不同案例'%(i+1,count) for i,count in enumerate(counts))
+        system=system.replace('每个方法只选1个代表案例，不同方法不重复案例。',
+            '本次精选%s个代表案例，%s，不同方法不重复案例。同一方法的两个案例应共同支撑该方法，分别写清各自的具体题眼。'%(packet['featured_count'],rule))
     system+='\n再次确认，本次正文只返回这些字段：'+','.join(names)+'。样稿只参考文字，不返回样稿的format、topic_label、lessons或limitations。'
     if feedback:
         system+='\n这次只返回 {"replace":{...}}，replace中必须且只能有这些需要替换的顶层段落：'+','.join(replacement_keys(packet,feedback))+'。程序会保留其他段落。返回这些段落的完整新值，不重发整份报告。若初稿案例与引用已合法，必须保留它们，只修改解释文字。'
@@ -80,8 +94,9 @@ def assemble(packet, body):
         raise ValidationIssue(path,'正文缺少指定段落或包含多余字段；仅补充/替换指出的段落。')
     lessons=[copy.deepcopy(body['method_'+str(i+1)]) for i in range(packet['method_count'])]
     for index,lesson in enumerate(lessons):
-        if not isinstance(lesson,dict) or not isinstance(lesson.get('cases'),list) or len(lesson['cases'])!=1:
-            raise ValidationIssue('$.lessons[%s]'%index,'每个方法只选一个代表案例。')
+        count=case_counts(packet)[index]
+        if not isinstance(lesson,dict) or not isinstance(lesson.get('cases'),list) or len(lesson['cases'])!=count:
+            raise ValidationIssue('$.lessons[%s]'%index,'本方法必须选择%s个不同的代表案例。'%count)
     # Factual report metadata comes from the provided evidence kinds, never a fallback analysis.
     kinds={e['kind'] for item in packet['materials'] for e in item['evidence']}
     basis=('本报告依据作品标题、简介和已核验数据分析选题，未将推测当作原视频口播或镜头。'

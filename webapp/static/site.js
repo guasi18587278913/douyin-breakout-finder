@@ -23,7 +23,7 @@ async function api(path,method='GET',body){
  for(const name of ['auth','home','progress','history','admin'])show(name+'-view',name===next);
  for(const name of ['new','history','admin'])el(name+'-nav').classList.toggle('active',next===(name==='new'?'home':name));
 }
-function authMode(){text('auth-title',registering?'打开你的创作手记':'登录你的手记');text('auth-submit',registering?'创建账号 →':'登录 →');text('auth-switch',registering?'已有账号？直接登录':'有邀请码？创建账号');text('auth-error','');show('invite-label',registering);input('invitation').required=registering;input('password').autocomplete=registering?'new-password':'current-password';}
+function authMode(){text('auth-title',registering?'创建账号':'登录账号');text('auth-submit',registering?'创建账号 →':'登录 →');text('auth-switch',registering?'已有账号？直接登录':'有邀请码？创建账号');text('auth-error','');show('invite-label',registering);input('invitation').required=registering;input('password').autocomplete=registering?'new-password':'current-password';}
 async function bootstrap(){
  const data=await api('/api/bootstrap');user=data.user;csrf=data.csrf;ready=data.ready;remaining=data.remaining||0;
  for(const id of ['new-nav','history-nav','logout'])show(id,!!user);show('admin-nav',user?.role==='admin');text('account',user?.username||'');
@@ -61,7 +61,7 @@ async function refreshJob(){if(!current||view!=='progress')return;const id=curre
  if(job.status==='done'&&job.report_url&&autoOpen===job.id){autoOpen='';location.assign(job.report_url);}
 }
 async function historyView(){switchView('history');history.replaceState(null,'','/');const {jobs}=await api('/api/jobs');const list=el('history-list');list.replaceChildren();
- if(!jobs.length){const empty=document.createElement('div');empty.className='paper empty';empty.textContent='还没有研究记录。写下一个主题，开始第一篇手记。';list.append(empty);return;}
+ if(!jobs.length){const empty=document.createElement('div');empty.className='paper empty';empty.textContent='还没有研究记录。输入一个主题，开始第一次研究。';list.append(empty);return;}
  /** @type {Record<string,string>} */ const labels={queued:'等待开始',running:'研究中',done:'已完成',error:'研究中断',needs_analysis:'阶段报告',interrupted:'可以接续',cancelled:'已停止'};
  for(const job of /** @type {Job[]} */(jobs)){const row=document.createElement('article');row.className='paper history-row';const info=document.createElement('div');const title=document.createElement('h2');title.textContent=job.topic;const meta=document.createElement('p');meta.textContent=new Date(job.created_at*1000).toLocaleString('zh-CN')+' · '+(job.mode==='demo'?'合成示例 · ':'')+(labels[job.status]||'已保存');info.append(title,meta);const link=document.createElement('a');link.className='outline';link.textContent=job.status==='done'?'阅读报告 ↗':'查看进度 →';link.href=job.status==='done'&&job.report_url?job.report_url:'/#job='+job.id;if(job.status!=='done')link.addEventListener('click',event=>{event.preventDefault();openJob(job.id).catch(e=>notice(message(e)));});row.append(info,link);list.append(row);}}
 async function adminView(){switchView('admin');const data=await api('/api/admin');text('provider-status',`数据服务：${data.providers.tikhub_key?'已配置':'待配置'} · 研究助手：${data.providers.deepseek_key?'已配置':'待配置'}`);text('admin-limits',`试用版：每人近24小时最多 ${data.user_limit} 轮，全站最多 ${data.daily_limit} 轮。每轮数据查询上限 $0.50，模型上限 $0.15；失败和接续保留原费用记录。`);}
