@@ -35,6 +35,19 @@ class QualityTests(unittest.TestCase):
                 row=next(r for r in bad['checks'] if r['evidence_refs']);row['evidence_refs'][0]['quote']='不存在的原始事实'
             with self.subTest(change=change):
                 with self.assertRaises(StopRun):validate(self.audit,bad)
+    def test_exact_target_echo_is_redundant_and_cannot_replace_review_fields(self):
+        good=verdict(self.audit)
+        for row,target in zip(good['checks'],self.audit['targets']):
+            row.update(text=target['text'],evidence_ids=target['evidence_ids'])
+        self.assertEqual(validate(self.audit,good),[])
+        good['checks'][0]['pass']=False
+        self.assertEqual(len(validate(self.audit,good)),1)
+        for change in ('text','evidence_ids','pass','reason','evidence_refs','extra'):
+            bad=copy.deepcopy(good)
+            if change in ('text','evidence_ids'):bad['checks'][0][change]='altered'
+            elif change=='extra':bad['checks'][0]['invented']='unexpected'
+            else:bad['checks'][0].pop(change)
+            with self.subTest(change=change),self.assertRaises(StopRun):validate(self.audit,bad)
     def model(self, always_fail=False, swap_case=False, invalid_review=False):
         drafts=[]
         def send(request):
@@ -43,6 +56,9 @@ class QualityTests(unittest.TestCase):
                 audit=json.loads(payload['messages'][1]['content'])
                 fail=always_fail or len(drafts)==1
                 answer={} if invalid_review else verdict(audit,fail_path='$.intro' if fail else None)
+                if getattr(self,'echo_targets',False):
+                    for row,target in zip(answer['checks'],audit['targets']):
+                        row.update(text=target['text'],evidence_ids=target['evidence_ids'])
             else:
                 answer=copy.deepcopy(self.answer)
                 if drafts:answer['intro']=['修正后，这个案例把原本分散的执行任务整理到一个具体问题里。']
@@ -59,6 +75,11 @@ class QualityTests(unittest.TestCase):
         self.assertTrue(verify_saved(self.store))
         third=self.calls[2]['messages'][1]['content'];self.assertIn('previous_answer',third);self.assertIn('$.intro',third)
         self.store.state['research']['intro'][0]+='后来修改';self.store.save();self.assertFalse(verify_saved(self.store))
+    def test_echoed_review_retains_original_response_hash_and_trace(self):
+        self.echo_targets=True;self.run_it(self.model())
+        self.assertTrue(verify_saved(self.store));self.assertEqual(len(self.calls),4)
+        receipt=read_json(self.store.root/'content-review.json')
+        self.assertIn('text',receipt['verdict']['checks'][0])
     def test_second_failure_no_publication_no_third_writer_even_after_restart(self):
         model=self.model(always_fail=True);before=copy.deepcopy(self.store.state)
         with self.assertRaises(AssistanceNeeded):self.run_it(model)

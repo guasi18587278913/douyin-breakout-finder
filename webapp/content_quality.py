@@ -52,9 +52,14 @@ def validate(packet, answer):
     if not isinstance(checks,list) or len(checks)!=len(expected):raise StopRun('内容审核未覆盖全部段落和建议。')
     seen=set()
     for item in checks:
-        if not isinstance(item,dict) or set(item)!={'path','criterion','pass','quote','reason','evidence_refs'}:raise StopRun('内容审核字段不完整。')
+        required={'path','criterion','pass','quote','reason','evidence_refs'}
+        if not isinstance(item,dict) or not required<=set(item) or set(item)-required-{'text','evidence_ids'}:raise StopRun('内容审核字段不完整。')
         key=(item['path'],item['criterion'])
         if key not in expected or key in seen or type(item['pass']) is not bool:raise StopRun('内容审核检查缺失或重复。')
+        # Some responses echo the supplied target. Accept only byte-for-byte equivalent
+        # values; these copies cannot supply or replace a judgment, reason, or citation.
+        for echo in ('text','evidence_ids'):
+            if echo in item and item[echo]!=expected[key][echo]:raise StopRun('内容审核回显与本次待审材料不一致。')
         seen.add(key)
         refs=item['evidence_refs'];allowed=set(expected[key]['evidence_ids'])
         sources={e['id']:e['text'] for items in packet['evidence'].values() for e in items}
