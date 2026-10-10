@@ -95,7 +95,7 @@ async function poll(){
       timer=window.setTimeout(poll,1200);return;
     }
     const summary=state.summary;
-    if(state.status==='done' && summary?.report_complete && state.report_url){
+    if(['done','report_ready'].includes(state.status) && summary?.report_complete && state.report_url){
       clearTimeout(timer);location.replace(state.report_url);return;
     }
     $('loading').hidden=true;

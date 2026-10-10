@@ -91,6 +91,13 @@ class SavedEvidenceChecks(unittest.TestCase):
         from workflow import apply_review, verify, CachedClient
         vid=next(iter(eligible_ids(self.store)))
         self.store.state['candidates'][vid]['followers']=50000
+        # A real refreshed follower count must be present in the source response.
+        for path in (self.store.root/'cache').glob('*.json'):
+            record=json.loads(path.read_text())
+            if record['operation']=='search':
+                for video in record['data']['videos']:
+                    if video['id']==vid:video['followers']=50000
+                atomic_json(path,record)
         apply_review(self.store,{vid:{'decision':'include','reason':'仍与主题相关','priority':1}})
         verify(self.store,CachedClient(self.store))
         checked=audit_run(self.store.root,require_report=False)

@@ -49,7 +49,8 @@ class ResearchContract(unittest.TestCase):
             session=Session(Path(temp)/'unused');session.run_dir=store.root;session.status='needs_analysis';session.summary=summary
             accept_research(store,full);render(store)
             updated=session.snapshot()
-            self.assertEqual(updated['status'],'done');self.assertTrue(updated['summary']['report_complete'])
+            self.assertEqual(updated['status'],'report_ready');self.assertTrue(updated['summary']['report_complete'])
+            self.assertNotIn('证据待补',updated['message'])
 
     def test_title_only_cannot_claim_spoken_opening(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -119,7 +120,16 @@ class BridgeContract(unittest.TestCase):
         fixture['queries']['FDE']=list(dict.fromkeys(vid for rows in fixture['queries'].values() for vid in rows))
         quote={'source_url':'https://tikhub.io/pricing','checked_at':now(),'usd_per_request':{k:'0.001' for k in ['search','posts','stats','comments']}}
         def fake_client(store,**kwargs):
-            replay=ReplayClient.__new__(ReplayClient);replay.store=store;replay.fixture=fixture;return replay
+            replay=ReplayClient.__new__(ReplayClient);replay.store=store;replay.fixture=fixture
+            original=replay.call
+            def recorded(op,params):
+                before=len(store.reservations());result=original(op,params)
+                if len(store.reservations())>before:
+                    from core import digest
+                    store.event({'event':'request','operation':op,'params':params,'key':digest({'op':op,'params':params})})
+                return result
+            replay.call=recorded
+            return replay
         with tempfile.TemporaryDirectory() as temp:
             session=Session(Path(temp)/'data',Path(temp)/'bridge',bridge_timeout=10)
             session.mode='live';session.key='SYNTHETIC-NOT-REAL'
@@ -154,9 +164,13 @@ class BridgeContract(unittest.TestCase):
                 session.start({'description':'FDE','consent':True})
                 session.worker.join(10);thread.join(2)
             self.assertFalse(errors,errors);self.assertEqual(stages,['prepare-research','semantic-review','content-analysis','semantic-review','content-analysis'])
-            self.assertEqual(session.status,'done');self.assertTrue(session.summary['report_complete']);self.assertIsNone(session.key)
+            self.assertEqual(session.status,'report_ready',session.message);self.assertTrue(session.summary['report_complete']);self.assertIsNone(session.key)
             html=(session.run_dir/'report.html').read_text(encoding='utf-8')
-            self.assertIn('自动生成的离线合成报告',html);self.assertIn('把一个具体任务讲清楚',html);self.assertIn('案例解读引用了本轮登记的内容证据',html)
+            self.assertIn('小号爆款研究报告',html);self.assertIn('把一个具体任务讲清楚',html)
+            saved=Store(session.run_dir).state['research']
+            self.assertEqual(saved['headline'],'自动生成的离线合成报告')
+            self.assertTrue(all(case['basis']=='content-read' for case in saved['cases'].values()))
+            self.assertNotIn('案例解读引用了本轮登记的内容证据',html)
 
     def test_missing_host_stops_before_quote_or_paid_requests(self):
         with tempfile.TemporaryDirectory() as temp:

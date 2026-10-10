@@ -1,6 +1,6 @@
 // @ts-check
 /** @typedef {{id:string,username:string,role:string}} User */
-/** @typedef {{id:string,topic:string,focus:string,mode:string,status:string,message:string,created_at:number,updated_at:number,cancel_requested:number,progress:any,report_url:string|null,can_resume:boolean}} Job */
+/** @typedef {{id:string,topic:string,focus:string,mode:string,status:string,message:string,created_at:number,updated_at:number,cancel_requested:number,progress:any,report_url:string|null,report_ready:boolean,can_resume:boolean}} Job */
 /** @template {HTMLElement} T @param {string} id @returns {T} */
 function el(id){const element=document.getElementById(id);if(!element)throw new Error('Missing element');return /** @type {T} */(element);}
 /** @param {string} id */const input=(id)=>/** @type {HTMLInputElement} */(el(id));
@@ -40,14 +40,14 @@ async function refreshJob(){if(!current||view!=='progress')return;const id=curre
 /** @param {Job} job */function renderJob(job){
  text('job-title',job.topic);text('job-message',job.message);text('job-mode',job.mode==='demo'?'合成示例':'真实研究');
  const active=['queued','running'].includes(job.status),p=job.progress||{};
- text('job-explanation',active?(job.cancel_requested?'正在收尾，已经发出的查询会先保存结果。':'可以关闭网页，研究会在后台继续。回来后在「我的研究」中查看。'):(job.status==='done'?'研究已完成，报告和原作品链接已经保存。':'已经取得的数据会保留。接续整理只使用本轮已有数据。'));
+ text('job-explanation',active?(job.cancel_requested?'正在收尾，已经发出的查询会先保存结果。':'可以关闭网页，研究会在后台继续。回来后在「我的研究」中查看。'):(job.status==='done'?(job.mode==='demo'?'这是一份合成示例。':'本轮目标已经核实，报告和原作品链接已经保存。'):job.status==='report_ready'?'已有成果可阅读；报告生成不代表本轮研究目标全部达成。':job.status==='needs_data'?'本轮数据没有核验完整，不能据此判断这个主题没有爆款。':'已经取得的数据会保留。接续整理只使用本轮已有数据。'));
  text('candidate-count',number(p.candidates||0));text('qualified-count',number(p.qualified||0));
  const elapsed=Math.max(0,Math.round((p.elapsed_seconds||0)+(job.status==='running'?(Date.now()/1000-job.updated_at):0)));text('elapsed',Math.floor(elapsed/60)+':'+String(elapsed%60).padStart(2,'0'));
  el('activity').classList.toggle('stopped',!active);
  const stage=['covers','render','verify_delivery'].includes(p.stage)?'write':['supplement','prepare'].includes(p.stage)?'search':p.stage;
  document.querySelectorAll('#stages li').forEach(node=>{node.classList.toggle('current',/** @type {HTMLElement} */(node).dataset.stage===stage);});
  show('cancel-job',active&&!job.cancel_requested);show('resume-job',job.can_resume);show('another-job',!active);show('open-report',!!job.report_url);
- if(job.report_url){/** @type {HTMLAnchorElement} */(el('open-report')).href=job.report_url;text('open-report',job.status==='done'?'阅读完整报告 ↗':'查看阶段报告');}
+ if(job.report_url){/** @type {HTMLAnchorElement} */(el('open-report')).href=job.report_url;text('open-report',job.report_ready?'阅读已有报告 ↗':'查看阶段报告');}
  const container=el('early-cards');container.replaceChildren();
  for(const row of p.usable_results||[]){
   const card=document.createElement('article');card.className='early-card paper';
@@ -58,12 +58,12 @@ async function refreshJob(){if(!current||view!=='progress')return;const id=curre
   if(!row.demo&&/^\d{10,30}$/.test(row.target.id)){const link=document.createElement('a');link.href='https://www.douyin.com/video/'+row.target.id;link.target='_blank';link.rel='noopener noreferrer';link.textContent='看原作品 ↗';card.append(link);}container.append(card);
  }
  show('early-section',container.childElementCount>0);
- if(job.status==='done'&&job.report_url&&autoOpen===job.id){autoOpen='';location.assign(job.report_url);}
+ if(['done','report_ready'].includes(job.status)&&job.report_ready&&job.report_url&&autoOpen===job.id){autoOpen='';location.assign(job.report_url);}
 }
 async function historyView(){switchView('history');history.replaceState(null,'','/');const {jobs}=await api('/api/jobs');const list=el('history-list');list.replaceChildren();
  if(!jobs.length){const empty=document.createElement('div');empty.className='paper empty';empty.textContent='还没有研究记录。输入一个主题，开始第一次研究。';list.append(empty);return;}
- /** @type {Record<string,string>} */ const labels={queued:'等待开始',running:'研究中',done:'已完成',error:'研究中断',needs_analysis:'阶段报告',interrupted:'可以接续',cancelled:'已停止'};
- for(const job of /** @type {Job[]} */(jobs)){const row=document.createElement('article');row.className='paper history-row';const info=document.createElement('div');const title=document.createElement('h2');title.textContent=job.topic;const meta=document.createElement('p');meta.textContent=new Date(job.created_at*1000).toLocaleString('zh-CN')+' · '+(job.mode==='demo'?'合成示例 · ':'')+(labels[job.status]||'已保存');info.append(title,meta);const link=document.createElement('a');link.className='outline';link.textContent=job.status==='done'?'阅读报告 ↗':'查看进度 →';link.href=job.status==='done'&&job.report_url?job.report_url:'/#job='+job.id;if(job.status!=='done')link.addEventListener('click',event=>{event.preventDefault();openJob(job.id).catch(e=>notice(message(e)));});row.append(info,link);list.append(row);}}
+ /** @type {Record<string,string>} */ const labels={queued:'等待开始',running:'研究中',done:'目标已核实',report_ready:'已有报告 · 目标未全部达成',needs_data:'数据不足',error:'研究中断',needs_analysis:'阶段报告',interrupted:'可以接续',cancelled:'已停止'};
+ for(const job of /** @type {Job[]} */(jobs)){const row=document.createElement('article');row.className='paper history-row';const info=document.createElement('div');const title=document.createElement('h2');title.textContent=job.topic;const meta=document.createElement('p');meta.textContent=new Date(job.created_at*1000).toLocaleString('zh-CN')+' · '+(job.mode==='demo'?'合成示例 · ':'')+(job.mode==='demo'&&job.status==='done'?'示例已生成':labels[job.status]||'已保存');info.append(title,meta);const link=document.createElement('a');link.className='outline';const readable=job.report_ready&&job.report_url;link.textContent=readable?'阅读报告 ↗':'查看进度 →';link.href=readable?job.report_url||'':'/#job='+job.id;if(!readable)link.addEventListener('click',event=>{event.preventDefault();openJob(job.id).catch(e=>notice(message(e)));});row.append(info,link);list.append(row);}}
 async function adminView(){switchView('admin');const data=await api('/api/admin');text('provider-status',`数据服务：${data.providers.tikhub_key?'已配置':'待配置'} · 研究助手：${data.providers.deepseek_key?'已配置':'待配置'}`);text('admin-limits',`试用版：每人近24小时最多 ${data.user_limit} 轮，全站最多 ${data.daily_limit} 轮。每轮数据查询上限 $0.50，模型上限 $0.15；失败和接续保留原费用记录。`);}
 /** @param {string} mode */async function start(mode){notice('');const topic=mode==='demo'?'FDE（合成示例）':/** @type {HTMLTextAreaElement} */(el('topic')).value.trim();const job=await api('/api/jobs','POST',{topic,focus:mode==='demo'?'all':/** @type {HTMLSelectElement} */(el('focus')).value,mode});if(mode==='live')remaining=Math.max(0,remaining-1);await openJob(job.id);}
 /** @param {string} id @param {() => Promise<any>|void} action */function click(id,action){el(id).addEventListener('click',async()=>{const button=/** @type {HTMLButtonElement} */(el(id));button.disabled=true;try{await action();}catch(error){notice(message(error));}finally{button.disabled=false;}});}

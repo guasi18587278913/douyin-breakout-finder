@@ -146,6 +146,7 @@ class Store:
 
     @classmethod
     def create(cls, root, config, as_of=None, demo=False):
+        from uuid import uuid4
         root = Path(root).resolve()
         if root.exists() and any(root.iterdir()):
             raise StopRun('Output directory must be empty. Existing files were not changed.')
@@ -153,7 +154,7 @@ class Store:
         root.mkdir(parents=True, exist_ok=True)
         atomic_json(root / 'config.json', config)
         atomic_json(root / 'state.json', {
-            'version': VERSION, 'config_hash': digest(config), 'as_of': as_of or now(),
+            'version': VERSION, 'run_id': uuid4().hex, 'config_hash': digest(config), 'as_of': as_of or now(),
             'demo': demo, 'candidates': {}, 'queries': {}, 'authors': {}, 'stats': {},
             'results': {}, 'comments': {}, 'analyses': {}, 'stops': []})
         return cls(root)

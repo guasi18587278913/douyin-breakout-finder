@@ -146,13 +146,19 @@ class CoverageContract(unittest.TestCase):
         with patch.object(s,'select_assistant',return_value=Analyst()),patch('wizard.fetch_prices',return_value=self.c['pricing']),patch('wizard.TikHubClient',side_effect=client):
             s.start({'description':'Skill','consent':True});s.worker.join(10)
         self.assertFalse(s.worker.is_alive())
-        self.assertEqual(s.status,'done',s.message)
+        self.assertEqual(s.status,'report_ready',s.message)
         self.assertEqual(s.summary['qualified_count'],4)
         self.assertEqual(s.summary['featured_count'],2)  # The writing fixture selects two; all four remain available.
         self.assertEqual([p['keyword'] for op,p in calls if op=='search'],['Skill','Skill安装','Skill使用'])
         stored=Store(s.run_dir)
         self.assertEqual(stored.config['max_requests'],50)
         self.assertEqual(stored.config['budget_usd'],'0.50')
+        from verification import audit_run
+        completion=audit_run(stored.root)['completion']
+        self.assertEqual(completion['retrieval']['search_rounds_proven'],3)
+        self.assertTrue(completion['retrieval']['legal_stop'])
+        self.assertFalse(completion['quantity']['met'])
+        self.assertFalse(completion['overall_goal_met'])
         self.assertLessEqual(len(stored.reservations()),50)
         self.assertLessEqual(stored.reserved_cost(),0.50)
 

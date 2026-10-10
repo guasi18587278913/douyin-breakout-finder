@@ -84,6 +84,30 @@ class CachedTests(unittest.TestCase):
         index=next(r[0] for r in packet['candidates'] if r[1]==vid)
         self.assertTrue(packet['data_incomplete']);self.assertNotIn(index,packet['numerically_qualified'])
 
+    def test_lite_only_cached_history_remains_recoverable(self):
+        from core import digest
+        changes={}
+        for path in (self.source.root/'cache').glob('*.json'):
+            record=read_json(path)
+            if record['operation']!='posts':continue
+            record['params']['channel']='lite'
+            key=digest({'op':'posts','params':record['params']});changes[path.stem]=key
+            atomic_json(path.with_name(key+'.json'),record);path.unlink()
+        for event in self.source.events:
+            if event.get('key') in changes:
+                event['key']=changes[event['key']]
+                if 'params' in event:event['params']['channel']='lite'
+                if 'cache' in event:event['cache']='cache/'+event['key']+'.json'
+        (self.source.root/'requests.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in self.source.events))
+        for result in self.source.state['results'].values():
+            if result.get('history_key'):result['history_key']=result['history_key'].replace(':normal',':lite')
+        self.source.save()
+        fresh=rebuild(self.source,self.root/'lite-replay')
+        self.assertTrue(packet_for(fresh)['numerically_qualified'])
+        from verification import audit_run
+        checked=audit_run(fresh.root,require_report=False)
+        self.assertTrue(checked['completion']['cached_recovery']['numerically_qualified_ids'])
+
     def test_joint_answer_requires_every_candidate_and_valid_statistics(self):
         answer=self.response(self.packet)
         bad=copy.deepcopy(answer);bad['reviews']=[]
@@ -209,6 +233,25 @@ class CachedTests(unittest.TestCase):
         receipt=read_json(self.source.root/'automatic-receipt.json')
         self.assertFalse(receipt['prior_reviews_used']);self.assertFalse(receipt['prior_story_used'])
         self.assertEqual(read_json(self.source.root/'verification.json')['status'],'PASS')
+
+    def test_no_numeric_cases_with_missing_data_stops_before_any_model_call(self):
+        # Use real cached processing but make the only qualifying target fail
+        # the threshold. The fixture also contains an unresolved candidate.
+        for path in (self.source.root/'cache').glob('*.json'):
+            rec=read_json(path)
+            if rec['operation']=='stats':
+                for vid,data in rec['data']['statistics'].items():data['play_count']=1000
+                atomic_json(path,rec)
+        class DB:
+            def progress(*args):pass
+        session=HostedSession(self.root/'session',DB(),{'id':'synthetic-empty-recovery'})
+        session.assistant=self.model();session.mode='live'
+        before={name:(self.source.root/name).read_bytes() for name in ('state.json','report.html','requests.jsonl')}
+        with patch('transport.request',side_effect=AssertionError('No network permitted')):
+            run_cached(session,self.source)
+        self.assertEqual(session.status,'needs_data');self.assertEqual(self.calls,[])
+        self.assertFalse(self.ledger.exists())
+        for name,raw in before.items():self.assertEqual((self.source.root/name).read_bytes(),raw)
 
     def test_validation_failure_preserves_previous_report(self):
         class DB:

@@ -161,6 +161,48 @@ class WebTests(unittest.TestCase):
         folder=run_dir(self.settings,job['id']);audit=json.loads((folder/'verification.json').read_text())
         self.assertEqual(audit['status'],'PASS');self.assertEqual(completed['progress']['qualified'],1)
         html=client.get(completed['report_url']);self.assertEqual(html.status_code,200);self.assertIn('新研究',html.text)
+    def test_old_done_row_cannot_upgrade_a_report_below_the_target(self):
+        from demo import run_demo
+        client,user=self.client_for('alice');job=self.db.enqueue(user['id'],'Synthetic live record','all','live')
+        run_demo(run_dir(self.settings,job['id']),selection=True)
+        self.db.finish(job['id'],'done','研究已完成',{})
+        result=client.get('/api/jobs/'+job['id']).json()
+        self.assertEqual(result['status'],'report_ready')
+        self.assertTrue(result['report_ready'])
+        self.assertFalse(result['completion']['quantity']['met'])
+        self.assertIn('尚未全部达成',result['message'])
+        self.assertEqual(client.get(result['report_url']).status_code,200)
+
+    def test_missing_data_disables_resume_and_returns_conflict_without_enqueue(self):
+        from demo import run_demo
+        from core import read_json,atomic_json
+        client,user=self.client_for('alice');job=self.db.enqueue(user['id'],'Synthetic missing data','all','live')
+        store,_=run_demo(run_dir(self.settings,job['id']),selection=True)
+        for path in (store.root/'cache').glob('*.json'):
+            rec=read_json(path)
+            if rec['operation']=='stats':
+                for data in rec['data']['statistics'].values():data['play_count']=1000
+                atomic_json(path,rec)
+        self.db.finish(job['id'],'error','写作失败',{})
+        result=client.get('/api/jobs/'+job['id']).json()
+        self.assertEqual(result['status'],'needs_data');self.assertFalse(result['can_resume'])
+        self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={}).status_code,409)
+        self.assertEqual(self.db.job(job['id'])['status'],'error')
+        self.assertFalse((store.root.parent/'model-events.jsonl').exists())
+
+    def test_completed_row_with_invalid_report_can_explicitly_resume_from_cache(self):
+        from demo import run_demo
+        client,user=self.client_for('alice');job=self.db.enqueue(user['id'],'Synthetic stale report','all','live')
+        store,_=run_demo(run_dir(self.settings,job['id']),selection=True)
+        path=store.root/'report.html';path.write_text(path.read_text().replace('<dd>','<dd>9999万 ',1))
+        self.db.finish(job['id'],'done','旧完成状态',{})
+        result=client.get('/api/jobs/'+job['id']).json()
+        self.assertEqual(result['status'],'needs_analysis');self.assertTrue(result['can_resume'])
+        response=client.post('/api/jobs/'+job['id']+'/resume',json={})
+        self.assertEqual(response.status_code,202,response.text)
+        self.assertEqual(self.db.job(job['id'])['resume_only'],1)
+        self.assertFalse((store.root.parent/'model-events.jsonl').exists())
+
     def test_unconfigured_real_research_does_not_enqueue(self):
         client,user=self.client_for('alice');r=client.post('/api/jobs',json={'topic':'AI自媒体'})
         self.assertEqual(r.status_code,409);self.assertEqual(self.db.jobs(user['id']),[])

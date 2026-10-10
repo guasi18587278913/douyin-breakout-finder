@@ -133,12 +133,13 @@ class StructuredTests(unittest.TestCase):
         self.assertTrue(resumed['reader_copy_required'])
         self.assertIn('面向读者的正文不写内部流程说明',cached_messages(resumed)[0]['content'])
         self.assertNotIn('少于20篇须明确说明',cached_messages(resumed)[0]['content'])
-    def test_approved_fourteen_is_distinct_from_long_term_twenty(self):
+    def test_unscoped_lower_target_does_not_replace_twenty(self):
         from report import render
         from verification import audit_run
         self.store.config['delivery_target_count']=1;atomic_json(self.store.root/'config.json',self.store.config)
         self.store.state['config_hash']=digest(self.store.config);self.store.save();self.run_it(self.model());summary=render(self.store)
-        self.assertTrue(summary['delivery_target_met']);self.assertFalse(summary['quantity_target_met'])
+        self.assertFalse(summary['delivery_target_met']);self.assertFalse(summary['quantity_target_met'])
+        self.assertEqual(summary['delivery_target_count'],20)
         # Real demo fixtures omit 'request' events; this check only targets the new independent count fields.
         count=next(c for c in audit_run(self.store.root)['checks'] if c['id']=='summary-counts');self.assertEqual(count['status'],'PASS')
 

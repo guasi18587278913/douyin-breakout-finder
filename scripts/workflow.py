@@ -26,6 +26,18 @@ def record_stop(store, phase, error):
     store.save()
 
 def search(store, client, keywords=None, reason=None, page_limit=None):
+    before = len(store.events)
+    try:
+        return _search(store, client, keywords, reason, page_limit)
+    finally:
+        keys = [e['key'] for e in store.events[before:]
+                if e.get('event') == 'reserved' and e.get('operation') == 'search']
+        if keys:
+            store.state.setdefault('search_batches', []).append(keys)
+            store.save()
+
+
+def _search(store, client, keywords=None, reason=None, page_limit=None):
     c, s = store.config, store.state
     keywords = list(dict.fromkeys(keywords or c['keywords']))
     if page_limit == 1 and len(keywords) > 1:
@@ -137,7 +149,7 @@ def search_batch(store, client, keywords, reason=None):
     if fatal: raise fatal
 
 
-def search_extensions(store, proposed, limit=2):
+def search_extensions(store, proposed, limit=2, record=False):
     """Prefer productive pages and one new angle, leaving room to verify discoveries."""
     c, state = store.config, store.state
     prices = c['pricing']['usd_per_request']
@@ -176,6 +188,15 @@ def search_extensions(store, proposed, limit=2):
         if remaining_usd < money(prices['search']) * count + reserve_usd:
             break
         selected.append(word)
+    if record:
+        store.state.setdefault('search_decisions', []).append({
+            'proposed_keywords': list(proposed), 'selected_keywords': selected,
+            'productive_keywords': page_words, 'request_count':len(store.reservations()),
+            'remaining_requests':remaining_requests, 'remaining_usd':str(remaining_usd),
+            'reserve_requests':reserve_requests, 'reserve_usd':str(reserve_usd),
+            'candidate_review_sha256':digest({vid:v.get('review') for vid,v in state['candidates'].items()}),
+            'at':now()})
+        store.save()
     return selected
 
 
