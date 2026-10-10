@@ -17,15 +17,12 @@ def serve():
     directory=Path(os.environ['BREAKOUT_BROWSER_TEST_DIR'])
     settings=Settings(directory,'http://127.0.0.1:8878',Fernet.generate_key().decode(),dev=True)
     app=create_app(settings)
-    invitation=app.state.db.invite('Synthetic browser acceptance','admin')
-    (directory/'browser-invite.json').write_text(json.dumps({'invitation':invitation}))
     uvicorn.run(app,host='127.0.0.1',port=8878,log_level='warning',access_log=False)
 
 def test():
     from playwright.sync_api import sync_playwright
     directory=Path(os.environ['BREAKOUT_BROWSER_TEST_DIR'])
     out=ROOT/'artifacts/web-acceptance';out.mkdir(parents=True,exist_ok=True)
-    invite=json.loads((directory/'browser-invite.json').read_text())['invitation']
     assertions=[];errors=[]
     def check(name,okay):
         assert okay,name
@@ -35,15 +32,17 @@ def test():
         try:
             page=browser.new_page(viewport={'width':1365,'height':1000})
             page.on('pageerror',lambda error:errors.append(str(error)))
-            page.goto('http://127.0.0.1:8878/#invite='+invite);page.wait_for_load_state('networkidle')
-            check('invite registration shown',page.get_by_role('heading',name='创建账号',exact=True).is_visible())
+            page.goto('http://127.0.0.1:8878/');page.wait_for_load_state('networkidle');page.locator('#auth-switch').click()
+            check('public registration shown',page.get_by_role('heading',name='创建账号',exact=True).is_visible())
+            check('no invitation requested','邀请码' not in page.locator('#auth-view').inner_text())
             page.screenshot(path=str(out/'registration-desktop.png'),full_page=True)
             page.get_by_label('用户名',exact=True).fill('browser-owner')
             page.get_by_label('密码',exact=True).fill('Synthetic-browser-password-2026')
             page.get_by_role('button',name='创建账号 →',exact=True).click()
             page.get_by_role('heading',name='小号爆款',exact=True).wait_for()
             check('ordinary live action disabled while unconfigured',page.locator('#research-submit').is_disabled())
-            check('admin navigation visible',page.locator('#admin-nav').is_visible())
+            check('ordinary account has no admin navigation',not page.locator('#admin-nav').is_visible())
+            check('ordinary account has member role',page.request.get('http://127.0.0.1:8878/api/bootstrap').json()['user']['role']=='member')
             page.screenshot(path=str(out/'home-desktop.png'),full_page=True)
             page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(out/'home-mobile.png'),full_page=True)
             check('mobile home no horizontal overflow',page.evaluate('document.documentElement.scrollWidth<=window.innerWidth'))
@@ -63,6 +62,12 @@ def test():
             page.get_by_label('用户名',exact=True).fill('browser-owner');page.get_by_label('密码',exact=True).fill('Synthetic-browser-password-2026')
             page.get_by_role('button',name='登录 →',exact=True).click();page.locator('#history-nav').wait_for(state='visible');page.locator('#history-nav').click();page.locator('.history-row').wait_for()
             check('history restored after login',page.locator('.history-row').count()==1)
+            second=browser.new_page()
+            second.goto('http://127.0.0.1:8878/');second.locator('#auth-view').wait_for(state='visible');second.locator('#auth-switch').click()
+            second.get_by_label('用户名',exact=True).fill('browser-other');second.get_by_label('密码',exact=True).fill('Synthetic-other-password-2026');second.locator('#auth-submit').click();second.locator('#home-view').wait_for(state='visible')
+            check('second public account cannot see owner report',second.request.get(report_url).status==404)
+            check('second public account has its own history',second.request.get('http://127.0.0.1:8878/api/jobs').json()['jobs']==[])
+            second.close()
             check('no browser runtime exceptions',not errors)
         finally:browser.close()
     result={'status':'PASS','passed':len(assertions),'failed':0,'assertions':assertions,'browser_errors':errors,'paid_queries':0}

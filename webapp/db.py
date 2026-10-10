@@ -120,6 +120,19 @@ class Database:
                       (hashed(token), str(label)[:80], role, now, now+hours*3600))
         return token
 
+    def register_public(self, name, password):
+        """Open signup always creates a member, including the first public account."""
+        name = username(name)
+        encoded = password_hash(password)
+        user_id = uuid.uuid4().hex
+        with self.connection(True) as c:
+            try:
+                c.execute('INSERT INTO users VALUES (?,?,?,?,?)', (user_id,name,encoded,'member',time.time()))
+            except sqlite3.IntegrityError:
+                raise Conflict('这个用户名已被使用，请换一个。') from None
+            c.execute('INSERT INTO audit(at,user_id,action) VALUES (?,?,?)', (time.time(),user_id,'register'))
+        return self.user(user_id)
+
     def register(self, invitation, name, password):
         name = username(name)
         if not isinstance(invitation, str) or not 30 <= len(invitation) <= 100:

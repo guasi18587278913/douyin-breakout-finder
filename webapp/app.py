@@ -1,4 +1,4 @@
-"""Private, invitation-only browser entry for the research engine."""
+"""Account-isolated browser entry for the research engine."""
 from contextlib import asynccontextmanager
 import hashlib
 import hmac
@@ -7,6 +7,7 @@ import re
 import secrets
 import time
 from urllib.parse import urlsplit
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.exceptions import RequestValidationError
@@ -26,7 +27,7 @@ class Login(Body):
     username:str=Field(min_length=2,max_length=40)
     password:str=Field(min_length=10,max_length=128)
 class Register(Login):
-    invitation:str=Field(min_length=30,max_length=100)
+    invitation:Optional[str]=Field(default=None,min_length=30,max_length=100)
 class Research(Body):
     topic:str=Field(min_length=1,max_length=500)
     focus:str='all'
@@ -145,7 +146,9 @@ def create_app(settings=None):
     @app.post('/api/register')
     def register(request:Request,body:Register):
         limit(request,'register',8,900)
-        return session_response(db.register(body.invitation,body.username,body.password))
+        user=(db.register_public(body.username,body.password) if body.invitation is None
+              else db.register(body.invitation,body.username,body.password))
+        return session_response(user)
     @app.post('/api/login')
     def login(request:Request,body:Login):
         limit(request,'login',10,900)

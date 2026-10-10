@@ -42,6 +42,54 @@ class WebTests(unittest.TestCase):
         body['username']='another';self.assertEqual(self.client.post('/api/register',json=body).status_code,400)
         self.assertEqual(self.client.post('/api/logout',json={}).status_code,200)
         self.assertEqual(self.client.get('/api/jobs').status_code,401)
+    def public_client(self,name):
+        client=TestClient(self.app,base_url=ORIGIN);self.addCleanup(client.close)
+        bootstrap=client.get('/api/bootstrap').json()
+        client.headers.update({'Origin':ORIGIN,'X-CSRF-Token':bootstrap['csrf']})
+        response=client.post('/api/register',json={'username':name,'password':PASSWORD})
+        self.assertEqual(response.status_code,200,response.text)
+        client.headers['X-CSRF-Token']=response.json()['csrf']
+        return client,response.json()['user']
+    def test_public_registration_without_invite_is_always_member(self):
+        client,user=self.public_client('first-public')
+        self.assertEqual(user['role'],'member')
+        self.assertEqual(client.get('/api/jobs').status_code,200)
+        self.assertEqual(client.get('/api/admin').status_code,403)
+        self.assertEqual(client.post('/api/admin/invites',json={'label':'no-access'}).status_code,403)
+        self.assertEqual(client.post('/api/admin/providers',json={'tikhub_key':'not-a-real-key'}).status_code,403)
+        self.assertEqual(client.post('/api/register',json={'username':'escalation','password':PASSWORD,'role':'admin'}).status_code,422)
+    def test_public_registration_preserves_identity_and_password_validation(self):
+        client,user=self.public_client('Public-Owner')
+        self.assertEqual(user['username'],'public-owner')
+        self.assertEqual(client.post('/api/register',json={'username':'PUBLIC-OWNER','password':PASSWORD}).status_code,409)
+        self.assertEqual(client.post('/api/register',json={'username':'short-pass','password':'short'}).status_code,422)
+        self.assertEqual(client.post('/api/register',json={'username':'bad name','password':PASSWORD}).status_code,400)
+        self.assertEqual(client.post('/api/logout',json={}).status_code,200)
+        data=client.get('/api/bootstrap').json();client.headers['X-CSRF-Token']=data['csrf']
+        response=client.post('/api/login',json={'username':'public-owner','password':PASSWORD})
+        self.assertEqual(response.status_code,200);self.assertEqual(response.json()['user']['id'],user['id'])
+    def test_public_signup_keeps_csrf_and_rejects_bad_optional_invite(self):
+        body={'username':'public-csrf','password':PASSWORD}
+        self.assertEqual(self.client.post('/api/register',json=body).status_code,403)
+        data=self.client.get('/api/bootstrap').json()
+        self.client.headers.update({'Origin':ORIGIN,'X-CSRF-Token':data['csrf']})
+        self.assertEqual(self.client.post('/api/register',json={**body,'invitation':'invalid-secret-token-with-no-record'}).status_code,400)
+        self.assertEqual(self.client.post('/api/register',json=body).status_code,200)
+    def test_public_member_can_create_own_research_without_admin_permissions(self):
+        alice,a=self.public_client('public-alice');bob,b=self.public_client('public-bob')
+        with patch.object(self.app.state.vault,'status',return_value={'tikhub_key':True,'deepseek_key':True}):
+            response=alice.post('/api/jobs',json={'topic':'AI自媒体','mode':'live'})
+        self.assertEqual(response.status_code,202)
+        ident=response.json()['id'];self.assertEqual(self.db.job(ident)['user_id'],a['id'])
+        folder=run_dir(self.settings,ident);folder.mkdir(parents=True);(folder/'report.html').write_text('<body>SYNTHETIC PRIVATE REPORT</body>')
+        self.assertEqual(alice.get('/reports/'+ident+'/report.html').status_code,200)
+        self.assertEqual(bob.get('/api/jobs').json()['jobs'],[])
+        self.assertEqual(bob.get('/reports/'+ident+'/report.html').status_code,404)
+        self.assertEqual(bob.post('/api/jobs/'+ident+'/cancel',json={}).status_code,404)
+    def test_bootstrap_admin_still_requires_the_server_created_invite(self):
+        _,first=self.public_client('ordinary-first');self.assertEqual(first['role'],'member')
+        admin,user=self.client_for('setup-owner','admin')
+        self.assertEqual(user['role'],'admin');self.assertEqual(admin.get('/api/admin').status_code,200)
     def test_csrf_origin_and_anonymous_registration(self):
         data=self.client.get('/api/bootstrap').json()
         body={'username':'unknown','password':PASSWORD}
