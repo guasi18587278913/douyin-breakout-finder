@@ -46,7 +46,7 @@ class SelectionReportContract(unittest.TestCase):
         self.assertIn('账号正常播放量', doc)
         self.assertNotIn('条线索未完成核验', doc)
         self.assertNotIn('待核验', doc)
-        self.assertIn('依据标题与简介', doc)
+        self.assertNotIn('本报告包含依据标题与简介的选题解读', doc)
         self.assertNotIn('正文证据待补</h3>', doc)
 
     def test_empty_report_cannot_misstate_why_no_case_qualified(self):

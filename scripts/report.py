@@ -144,23 +144,25 @@ def render(store, write=True):
     banner = '<div class="notice demo"><b>离线演示：全部为合成数据。</b>未联网，未读取密钥，没有真实 API 费用。示例链接不指向真实抖音视频。</div>' if demo else ''
     content = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>''' + E(research['story']['topic_label'] if editorial else c['topic']) + ''' · 小号爆款报告</title><style>''' + css + '''</style></head><body''' + (' class="report-editorial"' if editorial else '') + '''><main>''' + banner
     content += narrative(store)
-    content += '<details class="data-appendix"><summary>查看统计明细、筛选口径与费用记录</summary>'
-    content += '<div class="notice">筛选口径：粉丝不超过 %s；目标播放量至少为账号正常播放量的 %s 倍。对照目标 %s 条，至少 %s 条；少于目标数量单独标注。</div>' % (
-        c['max_followers'],c['min_ratio'],c['baseline_count'],c['min_baseline_count'])
-    if not editorial and any(v.get('review', {}).get('method') == 'keyword-rule' for v in s['candidates'].values()):
-        content += '<div class="notice">本报告使用标题/描述关键词初筛。“已核验”仅表示播放对照达标；内容语义仍待复核，请先复看原视频。</div>'
-    content += '<p><a href="results.csv" download>结果 CSV</a> · <a href="comparisons.csv" download>对照 CSV</a> · <a href="results.json">可复算 JSON</a></p>'
-    if research['story'] and not s['analyses']: cards=''
-    content += '<div class="scroll" id="data-results"><table><tr><th>内容 / 作者</th><th>播放量</th><th>账号正常播放量</th><th>倍数</th><th>状态</th></tr>' + table + '</table></div>' + cards
-    if not editorial: content += '<h2>其他已处理候选</h2><div class="scroll"><table><tr><th>视频</th><th>状态</th><th>原因</th></tr>' + (other or '<tr><td colspan="3">无</td></tr>') + '</table></div>'
-    if not editorial: content += '<h2>关键词结果</h2><div class="scroll"><table><tr><th>关键词</th><th>去重结果</th><th>初筛数量</th><th>初筛纳入率</th><th>首次引入</th><th>入选数量</th></tr>' + quality + '</table></div><p class="muted">相关性可能来自词规则、宿主 AI 或使用者；请查看逐条初审理由。首次引入数量受查询先后影响。搜索按点赞排序，不代表全平台最高播放榜。</p>'
-    content += '<h2>预算与数据边界</h2><p>已记录 %s 次请求尝试。按配置单价预留 <b>%s USD</b>，本轮预算 %s USD。</p><p>%s</p>' % (
-        len(reservations),E(str(estimated)),E(str(c['budget_usd'])),E(summary['billing_note']))
-    content += '<p class="muted">当前粉丝数不代表发布时规模；累计播放没有对齐相同发布后时长；未核实投流。对照为同作者邻近作品，不保证同题材。数据缺失、历史覆盖不足和账号正常播放量为零的记录不列为已核验结果。</p>'
-    if s['stops'] and not editorial:
-        content += '<details><summary>运行中的停止原因</summary><ul>' + ''.join('<li>%s：%s</li>' % (E(x['phase']),E(x['message'])) for x in s['stops']) + '</ul></details>'
-    content += '</details>'
-    content += ('' if editorial else '<p><a href="summary.json">方法与预算记录</a> · <a href="candidates.json">候选与相关性审查</a></p>') + '<footer>报告只保存公开研究字段。密钥不写入报告、研究缓存或分享包。对外分享运行目录前，请自行检查主题、评论和内容笔记是否适合公开。</footer></main></body></html>'
+    if not editorial:
+        content += '<details class="data-appendix"><summary>查看统计明细、筛选口径与费用记录</summary>'
+        content += '<div class="notice">筛选口径：粉丝不超过 %s；目标播放量至少为账号正常播放量的 %s 倍。对照目标 %s 条，至少 %s 条；少于目标数量单独标注。</div>' % (
+            c['max_followers'],c['min_ratio'],c['baseline_count'],c['min_baseline_count'])
+        if any(v.get('review', {}).get('method') == 'keyword-rule' for v in s['candidates'].values()):
+            content += '<div class="notice">本报告使用标题/描述关键词初筛。“已核验”仅表示播放对照达标；内容语义仍待复核，请先复看原视频。</div>'
+        content += '<p><a href="results.csv" download>结果 CSV</a> · <a href="comparisons.csv" download>对照 CSV</a> · <a href="results.json">可复算 JSON</a></p>'
+        if research['story'] and not s['analyses']: cards=''
+        content += '<div class="scroll" id="data-results"><table><tr><th>内容 / 作者</th><th>播放量</th><th>账号正常播放量</th><th>倍数</th><th>状态</th></tr>' + table + '</table></div>' + cards
+        content += '<h2>其他已处理候选</h2><div class="scroll"><table><tr><th>视频</th><th>状态</th><th>原因</th></tr>' + (other or '<tr><td colspan="3">无</td></tr>') + '</table></div>'
+        content += '<h2>关键词结果</h2><div class="scroll"><table><tr><th>关键词</th><th>去重结果</th><th>初筛数量</th><th>初筛纳入率</th><th>首次引入</th><th>入选数量</th></tr>' + quality + '</table></div><p class="muted">相关性可能来自词规则、宿主 AI 或使用者；请查看逐条初审理由。首次引入数量受查询先后影响。搜索按点赞排序，不代表全平台最高播放榜。</p>'
+        content += '<h2>预算与数据边界</h2><p>已记录 %s 次请求尝试。按配置单价预留 <b>%s USD</b>，本轮预算 %s USD。</p><p>%s</p>' % (
+            len(reservations),E(str(estimated)),E(str(c['budget_usd'])),E(summary['billing_note']))
+        content += '<p class="muted">当前粉丝数不代表发布时规模；累计播放没有对齐相同发布后时长；未核实投流。对照为同作者邻近作品，不保证同题材。数据缺失、历史覆盖不足和账号正常播放量为零的记录不列为已核验结果。</p>'
+        if s['stops']:
+            content += '<details><summary>运行中的停止原因</summary><ul>' + ''.join('<li>%s：%s</li>' % (E(x['phase']),E(x['message'])) for x in s['stops']) + '</ul></details>'
+        content += '</details>'
+        content += '<p><a href="summary.json">方法与预算记录</a> · <a href="candidates.json">候选与相关性审查</a></p><footer>报告只保存公开研究字段。密钥不写入报告、研究缓存或分享包。对外分享运行目录前，请自行检查主题、评论和内容笔记是否适合公开。</footer>'
+    content += '</main></body></html>'
     if not write:
         return content
     temp = store.root / 'report.html.tmp'

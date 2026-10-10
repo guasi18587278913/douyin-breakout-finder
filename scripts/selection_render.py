@@ -109,17 +109,8 @@ def render_selection(store, story):
     covers = read_json(store.root / 'covers.json', {})
     if not isinstance(covers, dict):
         covers = {}
-    from selection_report import eligible_ids,delivery_target
-    count=len(eligible_ids(store))
     collected = datetime.fromtimestamp(stamp(store.state['as_of']), timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
-    out = '<section class="selection-report"><header class="selection-header" id="overview"><p class="selection-kicker">选题研究 · '+E(collected[:10])+'</p><h1 class="selection-title">'+E(story['topic_label'])+'<span>小号爆款研究报告</span></h1><div class="selection-summary"><div><strong>'+str(count)+'</strong><span>篇合格作品</span></div><div><strong>'+str(len(story['cases']))+'</strong><span>篇精选解读</span></div><div><strong>'+str(len(story['lessons']))+'</strong><span>个选题方法</span></div></div></header>'
-    out += '<nav class="selection-index" aria-label="报告目录"><a href="#overview">报告概览</a><a href="#featured">精选解读</a><a href="#more">更多作品</a><a href="#report-notes">数据说明</a></nav><section class="selection-intro"><h2 class="selection-section-label">本轮发现</h2><p class="selection-opening">'+E(opening(store,story))+'</p>'
-    if not store.state.get('demo'):
-        if delivery_target(store)<20:
-            note='正文精选 '+str(len(story['cases']))+' 篇展开，其余作品列在“更多小号爆款”。'
-        else:
-            note='已达到本轮20–30篇的结果池目标。' if count>=20 else '尚未达到本轮20–30篇的结果池目标，以下只展示已核验的作品。'
-        out+='<p class="selection-pool-status">本轮共找到 '+str(count)+' 篇合格作品。'+note+'</p>'
+    out = '<section class="selection-report"><header class="selection-header" id="overview"><p class="selection-kicker">选题研究 · '+E(collected[:10])+'</p><h1 class="selection-title">'+E(story['topic_label'])+'<span>小号爆款研究报告</span></h1></header><section class="selection-intro">'
     intro = story['intro'] if story['cases'] else empty_intro(store)
     out += ''.join('<p>'+E(p)+'</p>' for p in intro)
     if story['status'] != 'complete':
@@ -153,10 +144,5 @@ def render_selection(store, story):
         out += ''.join(card(store, vid, covers, compact_row=True) for vid in more)+'</div>'
         out += '</section>'
     else:out+='<div id="more"></div>'
-    title_only = any(c['basis'] == 'title-description' for c in story['cases'].values())
-    basis = '本轮没有足够的合格案例用于解读。' if not story['cases'] else '本报告包含依据标题与简介的选题解读。' if title_only else '案例解读引用了本轮登记的内容证据。'
-    out += '<details class="selection-notes" id="report-notes"><summary>数据来源与解读依据</summary><p>数据采集于 '+E(collected)+'（北京时间）。'+basis+'你可以结合自己的内容尝试，实际表现还需要验证。</p><ul>'
-    limitations = story['limitations'] if story['cases'] else ['这份记录没有可供解读的充分核验案例，不据此判断整个主题的创作机会。']
-    out += ''.join('<li>'+E(note)+'</li>' for note in limitations)
-    out += '</ul></details></section>'
+    out += '</section>'
     return out

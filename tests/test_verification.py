@@ -57,7 +57,7 @@ class SavedEvidenceChecks(unittest.TestCase):
 
     def test_visible_text_cannot_change_while_retaining_aria_labels(self):
         path=self.store.root/'report.html';original=path.read_text(encoding='utf-8')
-        for changed in (original.replace('<strong>','<strong>9999万 ',1),
+        for changed in (original.replace('<dd>','<dd>9999万 ',1),
                         original.replace(self.store.state['research']['intro'][0],'被改写的正文')):
             path.write_text(changed,encoding='utf-8')
             failures=[r['id'] for r in audit_run(self.store.root)['checks'] if r['status']=='FAIL']
