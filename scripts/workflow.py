@@ -224,7 +224,8 @@ def keyword_quality(store):
     for name, q in qs.items():
         ids = q['ids']
         reviewed = [candidates[i]['review']['decision'] for i in ids
-                    if candidates[i]['review']['decision'] in ('include', 'exclude')]
+                    if candidates[i]['review']['decision'] in ('include', 'exclude')
+                    and candidates[i]['review'].get('method') != 'eligibility-rule']
         include = reviewed.count('include')
         unique = [i for i in ids if len(candidates[i]['queries']) == 1]
         verified = sum(store.state['results'].get(i, {}).get('status') in ('qualified', 'limited') for i in ids)

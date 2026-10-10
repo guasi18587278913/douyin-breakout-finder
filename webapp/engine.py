@@ -54,6 +54,8 @@ class Worker:
         try:fcntl.flock(self.lease.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:
             self.lease.close();raise RuntimeError('Another worker owns this database.') from None
+        from webapp.cached_analysis import recover_publications
+        recover_publications(self.settings.data_dir)
         self.db.recover_interrupted()
         self.thread=threading.Thread(target=self.loop,name='research-worker',daemon=True);self.thread.start()
     def close(self):
@@ -117,7 +119,11 @@ class Worker:
                     config['stats_strategy']='adaptive_fast'
                     check=type('PriceCheck',(),{'config':config})()
                     Store.pricing_ready(check,['search','posts','stats','stats_bulk','comments'])
-            session.run(config,resume=bool(job['resume_only']))
+            if job['mode']=='live' and job['resume_only']:
+                from webapp.cached_analysis import run_cached
+                run_cached(session,Store(session.run_dir))
+            else:
+                session.run(config,resume=bool(job['resume_only']))
             status=session.status
             message=session.message
             if session.cancelled.is_set() and status!='done':status='cancelled';message='已停止研究，已经取得的数据已保存。'

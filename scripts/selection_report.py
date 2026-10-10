@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 FIELDS = {'format', 'topic_label', 'title', 'intro', 'lessons', 'closing', 'limitations'}
 BANNED = ('同学们', '下午好', '今天我们就聊', '筛了一轮', '通知摘要', 'qualified', 'limited', '中位数')
 NUMBER = r'(?:\d[\d,]*(?:\.\d+)?|[零〇一二两三四五六七八九十百千万亿]+)'
-STATEMENT = re.compile(r'(?:播放(?:量)?|粉丝(?:量|数)?|倍数)[^。！？；\n]{0,16}' + NUMBER + r'|'+NUMBER+r'\s*(?:万次|亿次|万|亿|次|个|位|名)?\s*(?:播放|粉丝|倍)')
+QUANTITY_LINK = r'(?:(?:达到了|达到|高达|超过|超|不过|不足|不到|至少|至多|不低于|不高于|低于|高于|多达|约为|大约|大概|约|仅有|仅为|只有|只|仅|已经|已|突破|接近|将近|保守估计|总共|共有|总计|累计|记录为|记录了|为|是|有|等于|了|都|却|：|:|=)\s*){0,5}'
+STATEMENT = re.compile(r'(?:播放(?:量)?|粉丝(?:量|数)?|倍数)\s*' + QUANTITY_LINK + NUMBER +
+                       r'(?![种些般旦直定])|'+NUMBER+r'\s*(?:万次|亿次|万|亿|次|个|位|名)?\s*(?:播放|粉丝|倍)'
+                       r'|(?:播放(?:量)?|粉丝(?:量|数)?|倍数)[^。！？；\n]{0,16}\d[\d,]*(?:\.\d+)?'
+                       r'|(?:播放(?:量)?|粉丝(?:量|数)?)[^。！？；\n]{0,16}?'+NUMBER+r'\s*(?:十|百|千|万|亿|次|人|位|名)')
 BODY_CLAIMS = ('视频开头', '视频结尾', '第一镜头', '第二镜头', '镜头切换', '口播原话', '逐字稿显示', '我看完', '我看了', '开场说', '开头说')
 
 
@@ -101,12 +105,14 @@ def paragraphs(value, name, minimum=1, maximum=4, **options):
 
 
 def unresolved_data(store):
+    from research import valid_numeric_exclusion
     s = store.state
     if any(q.get('error') or not q.get('pages', 0) for q in s['queries'].values()):
         return True
     if not any(q.get('pages', 0) > 0 for q in s['queries'].values()):
         return True
     for vid, v in s['candidates'].items():
+        if valid_numeric_exclusion(store,vid):continue
         review = v.get('review', {})
         if review.get('decision') in ('pending', 'unsure') or review.get('method') != 'human-or-agent':
             return True

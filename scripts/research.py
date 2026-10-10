@@ -99,11 +99,19 @@ def review_fingerprint(store, vid):
                                 for item in evidence(store, vid)]})
 
 
+def valid_numeric_exclusion(store, vid):
+    candidate=store.state['candidates'][vid];review=candidate.get('review',{})
+    return (review.get('method')=='eligibility-rule' and review.get('decision')=='exclude'
+            and candidate.get('followers') is not None and candidate['followers']>store.config['max_followers']
+            and review.get('input_hash')==review_fingerprint(store,vid))
+
+
 def pending_reviews(store):
     return {vid: review_fingerprint(store, vid) for vid, candidate in store.state['candidates'].items()
-            if candidate.get('review', {}).get('decision') not in ('include', 'exclude')
+            if not valid_numeric_exclusion(store, vid)
+            and (candidate.get('review', {}).get('decision') not in ('include', 'exclude')
             or candidate['review'].get('method') != 'human-or-agent'
-            or candidate['review'].get('input_hash') != review_fingerprint(store, vid)}
+            or candidate['review'].get('input_hash') != review_fingerprint(store, vid))}
 
 
 def review_packet(store,round_number):
