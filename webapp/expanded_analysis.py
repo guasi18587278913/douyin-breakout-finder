@@ -3,7 +3,7 @@ import json
 import os
 import shutil
 import threading
-from core import StopRun, digest
+from core import StopRun, digest, atomic_json
 from workflow import search, search_extensions, verify, apply_review
 from research import pending_reviews, review_fingerprint, RELEVANCE_POLICY
 from selection_report import eligible_ids
@@ -82,7 +82,20 @@ def review_candidates(session,store,allow_keywords):
     return list(dict.fromkeys(words))
 
 
-def expand(session,source,replay):
+def continue_expansion(session,source,replay,approved,marker,prior):
+    """Consume one explicit 250-request amendment; interruption never silently replays it."""
+    if (approved.get('max_requests')!=250 or not approved.get('extension')
+        or source.config['max_requests']!=250 or source.config['budget_usd']!='0.50'
+        or replay.config!=source.config or prior.get('phase')!='continuation-ready'
+        or prior.get('approval_sha256')!=digest(approved)):
+        raise StopRun('新增数据查询与本次250次授权不一致，未发送请求。')
+    session.assistant.require_known_outcomes()
+    prior.update(phase='continuation-research');atomic_json(marker,prior)
+    expand(session,source,replay,qualified_goal=25)
+    prior.update(phase='writing');atomic_json(marker,prior)
+
+
+def expand(session,source,replay,qualified_goal=None):
     client=CanonicalClient(source,replay,session.key,session.cancelled)
     replay.on_verified=lambda:session.publish_usable(replay)
     for round_number in range(3):
@@ -90,7 +103,7 @@ def expand(session,source,replay):
         discover(replay)
         words=session.timed('review',lambda:review_candidates(session,replay,round_number<2))
         if any(v['review']['decision']=='include' for v in replay.state['candidates'].values()):
-            session.timed('verify',lambda:verify(replay,client))
+            session.timed('verify',lambda:verify(replay,client,qualified_goal=qualified_goal))
         session.publish_usable(replay)
         if len(eligible_ids(replay))>=25 or round_number==2:break
         next_words=search_extensions(replay,words)
@@ -101,7 +114,7 @@ def expand(session,source,replay):
     if discover(replay):
         session.timed('review',lambda:review_candidates(session,replay,False))
         if any(v['review']['decision']=='include' for v in replay.state['candidates'].values()):
-            session.timed('verify',lambda:verify(replay,client))
+            session.timed('verify',lambda:verify(replay,client,qualified_goal=qualified_goal))
     session.publish_usable(replay)
     if discover(replay):
         session.timed('review',lambda:review_candidates(session,replay,False))

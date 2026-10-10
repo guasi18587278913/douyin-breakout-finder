@@ -461,7 +461,7 @@ def verification_batch_size(store):
     return max(1, min(VERIFY_BATCH_SIZE, capacity))
 
 
-def verify(store, client, channel='normal'):
+def verify(store, client, channel='normal', qualified_goal=None):
     c, s = store.config, store.state
     store._bulk_attempted_this_verify = set()
     restore_stats_and_attempts(store)
@@ -498,6 +498,9 @@ def verify(store, client, channel='normal'):
     history_failures = {}
     batch_end = 0
     for index, target in enumerate(selected):
+        if qualified_goal is not None:
+            from selection_report import eligible_ids
+            if len(eligible_ids(store))>=qualified_goal:break
         if index >= batch_end and getattr(client, 'parallel_safe', False):
             batch_end = index + verification_batch_size(store)
             batch = [t for t in selected[index:batch_end]

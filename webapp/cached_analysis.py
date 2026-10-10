@@ -241,7 +241,8 @@ def run_cached(session, source):
                 prior=read_json(marker,{})
                 relative=Path(prior.get('replay_dir',''))
                 recovering_reviews=prior.get('phase')=='received-review-recovery'
-                if (prior.get('approval_sha256')!=digest(approved) or prior.get('phase') not in ('writing','complete','received-review-recovery') or relative.is_absolute() or len(relative.parts)!=2
+                continuing=prior.get('phase')=='continuation-ready'
+                if (prior.get('approval_sha256')!=digest(approved) or prior.get('phase') not in ('writing','complete','received-review-recovery','continuation-ready') or relative.is_absolute() or len(relative.parts)!=2
                     or not relative.parts[0].startswith('automatic-replay-') or relative.parts[1]!='research'):
                     raise StopRun('之前的自动扩充尚未完成，保留原记录；不会换分支重新收费。')
                 if recovering_reviews:
@@ -257,10 +258,13 @@ def run_cached(session, source):
                 replay=Store(saved)
                 if replay.config!=source.config:raise StopRun('接续配置与原自动步骤不一致。')
                 session.active_store=replay;expanded=True
+                if continuing:
+                    from webapp.expanded_analysis import continue_expansion
+                    continue_expansion(session,source,replay,approved,marker,prior)
             else:
                 with os.fdopen(fd,'w') as stream:
                     json.dump({'started_at':now(),'approval_sha256':digest(approved),'phase':'research','replay_dir':str(replay.root.relative_to(source.root.parent))},stream);stream.flush();os.fsync(stream.fileno())
-                if source.config['max_requests']!=150 or source.config['budget_usd']!='0.50':raise StopRun('补充查询上限与授权不一致。')
+                if source.config['max_requests']!=approved['max_requests'] or source.config['budget_usd']!='0.50':raise StopRun('补充查询上限与授权不一致。')
                 from webapp.expanded_analysis import expand
                 expand(session,source,replay);expanded=True
                 previous=read_json(marker,{});previous['phase']='writing';atomic_json(marker,previous)

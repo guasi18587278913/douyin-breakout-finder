@@ -3,6 +3,7 @@ import hashlib
 import json
 from decimal import Decimal
 from bridge import AssistanceNeeded
+from core import digest
 
 
 def approved(folder):
@@ -21,6 +22,21 @@ def approved(folder):
             if len(raw)<length or hashlib.sha256(raw[:length]).hexdigest()!=expected:raise ValueError()
         hashes=value['legacy_settlement_hashes']
         if not isinstance(hashes,list) or any(not isinstance(h,str) or len(h)!=64 for h in hashes):raise ValueError()
+        extension_path=folder/'approved-extension-250.json'
+        if extension_path.is_file():
+            extension=json.loads(extension_path.read_text())
+            if (extension.get('job_id')!=folder.name or type(extension.get('max_requests')) is not int
+                or extension['max_requests']!=250 or extension.get('prior_approval_sha256')!=digest(value)
+                or value['expand_data'] is not True):raise ValueError()
+            for key,amount in (('data_limit_usd','.50'),('model_limit_usd','.15'),('total_limit_usd','.65')):
+                if Decimal(extension[key])!=Decimal(amount):raise ValueError()
+            for label,journal in (('model',folder/'model-events.jsonl'),('data',folder/'research/requests.jsonl'),
+                                  ('settlements',folder/'model-events.jsonl.settlements.jsonl')):
+                length=extension['prior_'+label+'_bytes'];expected=extension['prior_'+label+'_sha256']
+                if type(length) is not int or length<0 or not isinstance(expected,str) or len(expected)!=64:raise ValueError()
+                raw=journal.read_bytes() if journal.is_file() else b''
+                if len(raw)<length or hashlib.sha256(raw[:length]).hexdigest()!=expected:raise ValueError()
+            value={**value,'max_requests':250,'extension':extension}
         return value
     except (KeyError,ValueError,TypeError,ArithmeticError,OSError):
         raise AssistanceNeeded('任务费用授权与原始记录不一致，已停止新的收费操作。') from None
