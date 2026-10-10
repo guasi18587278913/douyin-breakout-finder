@@ -83,7 +83,7 @@ class CompletionEvidence(unittest.TestCase):
     def test_missing_candidate_and_missing_delivered_card_are_detected_by_id(self):
         vid=next(iter(eligible_ids(self.store)))
         path=self.store.root/'report.html'
-        path.write_text(path.read_text().replace('id="case-'+vid+'"','id="missing-case"'))
+        path.write_text(path.read_text(encoding='utf-8').replace('id="case-'+vid+'"','id="missing-case"'),encoding='utf-8')
         report=audit_run(self.store.root)
         check=next(x for x in report['checks'] if x['id']=='report-cards')
         self.assertEqual(check['status'],'FAIL');self.assertIn(vid,check['observed']['expected_ids'])
@@ -98,8 +98,8 @@ class CompletionEvidence(unittest.TestCase):
         self.assertFalse(report['completion']['quantity']['verified'])
 
     def test_request_parameters_must_match_the_cached_request_key(self):
-        record=next(json.loads(p.read_text()) for p in (self.store.root/'cache').glob('*.json')
-                    if json.loads(p.read_text())['operation']=='search')
+        record=next(json.loads(p.read_text(encoding='utf-8')) for p in (self.store.root/'cache').glob('*.json')
+                    if json.loads(p.read_text(encoding='utf-8'))['operation']=='search')
         key=digest({'op':'search','params':record['params']})
         self.store.event({'event':'request','operation':'search','params':{'keyword':'forged'},'key':key})
         report=audit_run(self.store.root,require_report=False)
@@ -118,7 +118,7 @@ class CompletionEvidence(unittest.TestCase):
 
     def test_provider_pagination_is_read_from_cache_not_state(self):
         for path in (self.store.root/'cache').glob('*.json'):
-            record=json.loads(path.read_text())
+            record=json.loads(path.read_text(encoding='utf-8'))
             if record['operation']=='search':
                 record['data'].update(has_more=True,cursor=123)
                 atomic_json(path,record)

@@ -93,7 +93,7 @@ class SavedEvidenceChecks(unittest.TestCase):
         self.store.state['candidates'][vid]['followers']=50000
         # A real refreshed follower count must be present in the source response.
         for path in (self.store.root/'cache').glob('*.json'):
-            record=json.loads(path.read_text())
+            record=json.loads(path.read_text(encoding='utf-8'))
             if record['operation']=='search':
                 for video in record['data']['videos']:
                     if video['id']==vid:video['followers']=50000

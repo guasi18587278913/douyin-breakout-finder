@@ -17,7 +17,7 @@ class FailureDiagnostics(unittest.TestCase):
             client=TikHubClient(store,True,api_key=key,request_interval=0)
             with patch('transport.request',return_value=(400,json.dumps(body))):
                 with self.assertRaises(APIError):client.call('posts',{'sec_user_id':'synthetic-author','max_cursor':0})
-            journal=(store.root/'requests.jsonl').read_text()
+            journal=(store.root/'requests.jsonl').read_text(encoding='utf-8')
             self.assertNotIn(key,journal);self.assertNotIn('DO-NOT-SAVE-BODY',journal)
             self.assertEqual(len(store.reservations()),1)
             return next(e['diagnostic'] for e in store.events if e['event']=='failed')
