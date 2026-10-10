@@ -47,6 +47,12 @@ def eligible_ids(store):
             and r.get('verification_fingerprint') == verification_fingerprint(store, store.state['candidates'][vid], r)}
 
 
+def delivery_target(store):
+    value=store.config.get('delivery_target_count',20)
+    if type(value) is not int or not 1<=value<=30:raise StopRun('本轮交付数量目标无效。')
+    return value
+
+
 def schema(packet):
     from analyst import object_schema
     string = {'type': 'string'}

@@ -99,7 +99,7 @@ def normalized_report(story):
 
 def reviewed_generation(model, stage, packet, store, accept, report_of=lambda answer:answer):
     """One initial generation + at most one targeted revision. Review never retries."""
-    feedback='';draft=None;frozen=None
+    feedback='';draft=None;frozen=None;draft_attempts=[]
     def stable(value):
         if isinstance(value,dict):return {k:stable(v) for k,v in value.items() if k!='run_dir'}
         if isinstance(value,list):return [stable(v) for v in value]
@@ -116,8 +116,12 @@ def reviewed_generation(model, stage, packet, store, accept, report_of=lambda an
             allowance=review_allowance(store)
             if Decimal(plan['spent_usd'])+Decimal(plan['reserved_usd'])+allowance>Decimal('0.15'):
                 raise AssistanceNeeded('剩余额度不足以覆盖写作及独立审核，已保存现有结果。')
-            draft=model.generate(stage,packet,feedback)
-            draft_attempt=model.last_attempt
+            raw=model.generate(stage,packet,feedback)
+            draft_attempt=model.last_attempt;draft_attempts.append(draft_attempt)
+            if stage=='report-sections':
+                from webapp.structured_writer import resolve
+                draft=resolve(packet,raw,feedback)
+            else:draft=raw
             before=copy.deepcopy(store.state)
             try:
                 result=accept(draft)
@@ -143,7 +147,7 @@ def reviewed_generation(model, stage, packet, store, accept, report_of=lambda an
                 review_attempt=model.last_attempt
                 errors=validate(audit_packet,verdict)
                 saved={'protocol':PROTOCOL,'at':now(),'draft_attempt':draft_attempt,'review_attempt':review_attempt,
-                       'revision':revision,'packet':audit_packet,'verdict':verdict,'passed':not errors}
+                       'draft_attempts':draft_attempts,'revision':revision,'packet':audit_packet,'verdict':verdict,'passed':not errors}
                 atomic_json(store.root/('content-review-%s.json'%revision),saved)
                 if errors:
                     error=ValidationIssue('$.content_value','内容含义审核未通过。')
@@ -194,7 +198,9 @@ def verify_model_trace(store,saved):
         draft=saved['draft_attempt'];review=saved['review_attempt']
         if type(draft) is not int or type(review) is not int or draft==review:return False
         responses={};reserves={}
-        for attempt,stages in ((draft,('cached-report','content-analysis')),(review,('content-value-review',))):
+        chain=saved.get('draft_attempts',[draft])
+        if not isinstance(chain,list) or not 1<=len(chain)<=2 or chain[-1]!=draft or len(set(chain))!=len(chain):return False
+        for attempt,stages in [(n,('cached-report','content-analysis','report-sections')) for n in chain]+[(review,('content-value-review',))]:
             starts=[r for r in rows if r.get('kind')=='reserve' and r.get('id')==attempt]
             ends=[r for r in rows if r.get('kind')=='finish' and r.get('id')==attempt]
             if len(starts)!=1 or len(ends)!=1 or starts[0].get('stage') not in stages or ends[0].get('outcome')!='received':return False
@@ -208,6 +214,35 @@ def verify_model_trace(store,saved):
         expected=messages_for(saved['packet'])
         request_hash=hashlib.sha256(json.dumps({'stage':'content-value-review','messages':expected},ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
         if reserves[review]['request_hash']!=request_hash:return False
-        draft_answer=responses[draft]['report'] if reserves[draft]['stage']=='cached-report' else responses[draft]
+        if reserves[draft]['stage']=='report-sections':
+            from webapp.structured_writer import packet_for as writer_packet, resolve, assemble, messages_for as writer_messages
+            current=writer_packet(store);body=None;operation=None;offset=0
+            if len(chain)==1 and reserves[chain[0]].get('operation',{}).get('step')=='draft-1':
+                op=reserves[chain[0]]['operation']['id']
+                failed=[r for r in rows if r.get('kind')=='reserve' and r.get('operation')=={'id':op,'step':'draft-0'}]
+                if len(failed)!=1 or failed[0]['stage']!='report-sections':return False
+                ends=[r for r in rows if r.get('kind')=='finish' and r.get('id')==failed[0]['id']]
+                if (len(ends)!=1 or ends[0].get('outcome')!='failed' or ends[0].get('response_complete') is not True
+                    or ends[0].get('failure_type')!='invalid_json'):return False
+                request=read_json(job/'model-diagnostics'/('attempt-%03d-request.json'%failed[0]['id']),{})
+                expected=writer_messages(current,'')
+                h=hashlib.sha256(json.dumps({'stage':'report-sections','messages':expected},ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                if request.get('payload',{}).get('messages')!=expected or failed[0]['request_hash']!=h:return False
+                offset=1
+            for index,attempt in enumerate(chain):
+                step=index+offset;start=reserves[attempt]
+                if start['stage']!='report-sections' or start.get('operation',{}).get('step')!='draft-'+str(step):return False
+                if operation is not None and operation!=start['operation']['id']:return False
+                operation=start['operation']['id']
+                request=read_json(job/'model-diagnostics'/('attempt-%03d-request.json'%attempt),{})
+                messages=request['payload']['messages'];data=json.loads(messages[1]['content']);feedback=data['feedback']
+                if data['packet']!=current or (step==0 and feedback) or (step==1 and (not isinstance(feedback,dict) or feedback.get('previous_answer')!=body)):return False
+                expected_messages=writer_messages(current,feedback)
+                h=hashlib.sha256(json.dumps({'stage':'report-sections','messages':expected_messages},ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+                if messages!=expected_messages or h!=start['request_hash']:return False
+                body=resolve(current,responses[attempt],feedback)
+            draft_answer=assemble(current,body)
+        else:
+            draft_answer=responses[draft]['report'] if reserves[draft]['stage']=='cached-report' else responses[draft]
         return normalized_report(validate_report(store,draft_answer))==saved['packet']['report']
     except (KeyError,TypeError,ValueError,StopRun,OSError):return False

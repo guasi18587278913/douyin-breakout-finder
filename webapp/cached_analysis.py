@@ -268,6 +268,7 @@ def run_cached(session, source):
             from workflow import verify
             if any(v['review']['decision']=='include' for v in replay.state['candidates'].values()):
                 session.timed('verify',lambda:verify(replay,CachedClient(replay)))
+        session.publish_usable(replay)
         packet=packet_for(replay)
         request_plan={} if expanded else model.plan('cached-report',packet,'')
         atomic_json(replay.root/'automatic-plan.json', {k:v for k,v in request_plan.items() if k!='messages'})
@@ -314,4 +315,4 @@ def run_cached(session, source):
         if expanded:
             previous=read_json(marker,{});previous['phase']='complete';atomic_json(marker,previous)
         session.status='done'
-        session.message=('选题报告已自动生成，本轮结果达到数量目标。' if summary.get('quantity_target_met') else '选题报告已自动生成，本轮合格作品仍少于20篇。')
+        session.message='选题报告已自动生成，本轮共 %s 篇合格作品。'%summary['qualified_count']

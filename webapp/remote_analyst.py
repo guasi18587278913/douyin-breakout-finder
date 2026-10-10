@@ -60,7 +60,11 @@ class RemoteAnalyst(LocalAnalyst):
 
     def plan(self, stage, packet, feedback):
         self.check()
-        if stage=='content-value-review':
+        if stage=='report-sections':
+            from webapp.structured_writer import messages_for
+            messages=messages_for(packet,feedback)
+            desired=minimum=5000
+        elif stage=='content-value-review':
             from webapp.content_quality import messages_for
             messages=messages_for(packet)
             desired=minimum=min(5000,500+230*len(packet['targets']))
@@ -106,7 +110,7 @@ class RemoteAnalyst(LocalAnalyst):
             related=[r for r in rows if r.get('kind')=='reserve' and r.get('operation')==self.operation]
             if related and (len(related)!=1 or related[0].get('request_hash')!=request_hash):
                 raise AssistanceNeeded('本步骤已有不同请求记录，不能通过改变反馈重置修正次数。')
-        if stage in ('cached-report','content-value-review','content-analysis','candidate-review'):
+        if stage in ('cached-report','content-value-review','content-analysis','candidate-review','report-sections'):
             previous=self.reusable_response(request_hash, rows)
             if previous:
                 return {'messages':messages,'maximum':previous[0]['max_tokens'],'minimum':minimum,'desired':desired,

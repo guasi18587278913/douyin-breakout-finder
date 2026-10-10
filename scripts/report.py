@@ -57,7 +57,7 @@ def render(store, write=True):
     estimated = store.reserved_cost()
     failures = [e for e in store.events if e['event'] == 'failed']
     research=report_state(store)
-    from selection_report import FORMAT, eligible_ids
+    from selection_report import FORMAT, eligible_ids, delivery_target
     editorial = bool(research['story'] and research['story'].get('format') == FORMAT)
     eligible = eligible_ids(store) if editorial else set()
     summary = {
@@ -72,6 +72,7 @@ def render(store, write=True):
         'candidate_count': len(s['candidates']), 'selected_count': len(eligible) if editorial else len(selected),
         'qualified_count': len(eligible) if editorial else sum(r['status'] == 'qualified' for r in results),
         'quantity_target_min':20,'quantity_target_met':len(eligible)>=20 if editorial else False,
+        'delivery_target_count':delivery_target(store),'delivery_target_met':len(eligible)>=delivery_target(store) if editorial else False,
         'limited_count': sum(r['status'] == 'limited' for r in results),
         'pending_count': sum(r['status'] == 'pending' for r in results),
         'request_attempts': len(reservations), 'failed_attempts': len(failures),

@@ -42,9 +42,10 @@ class HostedSession(Session):
         from webapp.content_quality import reviewed_generation
         if any(store.state['candidates'][vid]['review'].get('decision') in ('include','exclude') for vid in pending_reviews(store)):
             self.refresh_review(store)
-        packet=analysis_packet(store)
-        return self.timed('write',lambda:reviewed_generation(self.assistant,'content-analysis',packet,store,
-            lambda answer:accept_research(store,answer,expected_format=FORMAT)))
+        from webapp.structured_writer import packet_for,assemble
+        packet=packet_for(store)
+        return self.timed('write',lambda:reviewed_generation(self.assistant,'report-sections',packet,store,
+            lambda body:accept_research(store,assemble(packet,body),expected_format=FORMAT),lambda body:assemble(packet,body)))
 
     def timed(self,stage,action):
         self.stage=stage

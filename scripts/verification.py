@@ -70,7 +70,7 @@ def audit_run(root, require_report=True):
           and all(r.get('target', {}).get('id') == vid for vid, r in results.items()),
           {'orphan_result_ids': sorted(set(results) - set(candidates))})
     from research import pending_reviews, report_state
-    from selection_report import FORMAT, eligible_ids
+    from selection_report import FORMAT, eligible_ids, delivery_target
     pending = pending_reviews(store)
     rows = []
     for vid, candidate in sorted(candidates.items()):
@@ -155,6 +155,7 @@ def audit_run(root, require_report=True):
                   {'required_links': len(eligible)})
         expected = {'candidate_count': len(candidates), 'qualified_count': len(eligible),
                     'quantity_target_min':20,'quantity_target_met':len(eligible)>=20,
+                    'delivery_target_count':delivery_target(store),'delivery_target_met':len(eligible)>=delivery_target(store),
                     'featured_count': len((readiness.get('story') or {}).get('cases', {})),
                     'request_attempts': len(reservations),
                     'pending_count': sum(r.get('status') == 'pending' for r in results.values())}

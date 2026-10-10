@@ -103,10 +103,13 @@ def render_selection(store, story):
     if not isinstance(covers, dict):
         covers = {}
     out = '<section class="selection-report"><h1 class="selection-opening">'+E(opening(store, story))+'</h1>'
-    from selection_report import eligible_ids
+    from selection_report import eligible_ids,delivery_target
     count=len(eligible_ids(store))
     if not store.state.get('demo'):
-        note='已达到本轮20–30篇的结果池目标。' if count>=20 else '尚未达到本轮20–30篇的结果池目标，以下只展示已核验的作品。'
+        if delivery_target(store)<20:
+            note='正文精选 '+str(len(story['cases']))+' 篇展开，其余作品列在“更多小号爆款”。'
+        else:
+            note='已达到本轮20–30篇的结果池目标。' if count>=20 else '尚未达到本轮20–30篇的结果池目标，以下只展示已核验的作品。'
         out+='<p class="selection-pool-status">本轮共找到 '+str(count)+' 篇合格作品。'+note+'</p>'
     intro = story['intro'] if story['cases'] else empty_intro(store)
     out += ''.join('<p>'+E(p)+'</p>' for p in intro)
