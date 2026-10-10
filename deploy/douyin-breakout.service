@@ -1,0 +1,32 @@
+[Unit]
+Description=Douyin Breakout Research Website
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=breakout
+Group=breakout
+WorkingDirectory=/opt/douyin-breakout/current
+EnvironmentFile=/etc/douyin-breakout.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/douyin-breakout/current/.venv/bin/uvicorn webapp.app:create_app --factory --host 127.0.0.1 --port 8795 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-access-log --log-level warning
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=200
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/douyin-breakout
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=650M
+CPUQuota=150%
+
+[Install]
+WantedBy=multi-user.target

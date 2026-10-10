@@ -1,0 +1,41 @@
+# 网站部署与维护
+
+网站为邀请制试用版本，入口 `https://breakout.zmtgzt.com`。不提供支付或公开自助注册。普通用户的报告、数据和下载按账号隔离；管理员管理邀请与后台服务配置，不能通过网页读取其他用户的研究。
+
+## 运行位置
+
+- 香港服务器 SSH 名 `topic-remix`，独立监听 `127.0.0.1:8795`。
+- 系统用户 `breakout`，数据 `/var/lib/douyin-breakout`，SQLite 及研究记录均在该目录。
+- 发布目录 `/opt/douyin-breakout/releases/<git-sha>`，每版本 `.venv`，`current` 链接选择版本。
+- 仅本项目配置：`/etc/systemd/system/douyin-breakout.service`、`/etc/caddy/sites/breakout.caddy`。
+- `/etc/douyin-breakout.env` 仅 root 可读，保存主加密密钥和非敏感运行参数。服务商 Key 加密保存在数据目录 `private/providers.enc`；主密钥不能与数据库备份放在公开位置。
+
+依赖安装：`python3 -m venv .venv` 后使用 `requirements-web.txt`。Web 使用 Python 3.9+，正式服务器为3.12。网站必须经 HTTPS 反向代理；应用只信任127.0.0.1的代理头，禁止将内部8795端口直接对外开放。
+
+## 发布
+
+先完成受影响检查、前端类型检查和独立审查，记录确定的 Git 提交。将该提交的 `git archive` 放入对应发布目录，使用 `sudo bash <release>/deploy/install-release.sh <release>` 安装。脚本只更改本项目文件；失败恢复旧版本、旧服务配置及旧Caddy站点，保留数据和主密钥。回滚不执行数据库逆迁移；当前仅有初始schema版本1，未来迁移另行授权。
+
+首次管理员通过 `python -m webapp.manage bootstrap` 生成48小时一次性邀请，使用服务用户及同一私密环境执行。已有管理员时拒绝再次bootstrap；普通邀请可由管理员网页或 `python -m webapp.manage invite` 创建。邀请不可写进公开仓库或访问日志，页面读取后立即从地址栏移除。
+
+`deploy/import-approved-providers.py` 是本次获授权的服务器内一次性导入工具，只读取 topic-remix `.env.local` 中两项服务配置（TikHub 可引用它指定的 Key 文件），不移动源文件，不读其他服务凭证，不打印值。今后使用须重新确认新增用途是否已授权。网页管理员可在管理页自行更换独立配置。
+
+## 任务与费用
+
+每用户一次进行中的任务，服务全局一次实际研究；近24小时默认全站2次真实研究，每用户2次，排队和失败也计入次数。单轮数据最多50次、USD0.50预留；模型最多USD0.15预留。模型只使用固定DeepSeek HTTPS接口，不读取本机CLI登录。
+
+DeepSeek采用2026-10-10核对的flash高峰缓存未命中报价：输入USD0.30/百万token，输出USD1.20/百万token。来源：<https://api-docs.deepseek.com/quick_start/pricing/>。每次发送前，以UTF-8字节数加消息余量估算输入上界，并预留最大输出；失败、验证重写、页面接续都保留同一份模型账本。报价超过30天暂停新的模型分析，维护者核对官方型号/价格后更新常量并按发布流程交付。此处费用是保守预留，实际账单以供应商为准。
+
+每次真实任务匿名读取TikHub报价。网站启用批量统计：25至50个缺失ID，批量费用不高于小接口估算2倍且剩余额度可容纳时合并；否则沿用小接口。无自动收费重试。显式开发者重试保留原批量分组，并重算所有受新数据影响的既有结果。
+
+进程重启或数据库故障不会自动重放已开始的收费任务。中断记录可在网页接续，接续只用现有TikHub缓存；模型仍在原任务剩余额度内调用。禁止清空账本、删除数据库或重复新建任务来掩盖失败。
+
+## 检查
+
+- `python3 -B -m unittest discover -s webapp/tests -v`：登录/CSRF、隔离、并发配额、任务生命周期、模型账本、合成报告完整性。
+- `tsc -p webapp/tsconfig.json`（TypeScript 5.9.3）：浏览器脚本严格类型检查；无需构建前端。
+- `tests/browser_web.py`：真实本地浏览器注册、合成研究、自动正文跳转、手机页面、历史、退出与重新登录。使用独立临时数据目录，不能指向生产。
+- 现有研究模块检查按改动选择；真实线上验收须有明确次数与费用授权。
+- 公网 `/health` 检查服务及后台线程，异常时503。研究完成前仍执行磁盘与报告独立核对，非PASS不会标记done。
+
+本次用户另行授权复用服务配置，并在总USD0.65内完成一次真实验收。验收结果在本地私有 `artifacts/web-acceptance` 保存，不把会话Cookie、测试密码、邀请码或服务Key写入公开证据。

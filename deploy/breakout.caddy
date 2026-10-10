@@ -1,0 +1,6 @@
+breakout.zmtgzt.com {
+    request_body {
+        max_size 16KB
+    }
+    reverse_proxy 127.0.0.1:8795
+}

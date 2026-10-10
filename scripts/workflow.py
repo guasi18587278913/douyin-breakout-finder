@@ -313,13 +313,13 @@ def restore_stats_and_attempts(store):
     attempts = Counter()
     logged_keys = set()
     for e in store.events:
-        if e.get('event') == 'request' and e.get('operation') == 'stats':
+        if e.get('event') == 'request' and e.get('operation') in ('stats', 'stats_bulk'):
             logged_keys.add(e['key'])
             attempts.update(set(e['params']['aweme_ids'].split(',')))
     snapshots = []
     for path in (store.root / 'cache').glob('*.json'):
         record = read_json(path)
-        if record.get('operation') == 'stats':
+        if record.get('operation') in ('stats', 'stats_bulk'):
             snapshots.append((record.get('captured_at', ''), path.stem, record))
     for _, key, record in sorted(snapshots):
         requested = record['params']['aweme_ids'].split(',')
@@ -334,13 +334,70 @@ def restore_stats_and_attempts(store):
         attempts[vid] = max(attempts[vid], count)
     return attempts
 
+def bulk_worthwhile(store, count):
+    if store.config.get('stats_strategy') != 'adaptive_fast' or not 25 <= count <= 50:
+        return False
+    prices = store.config['pricing']['usd_per_request']
+    try:
+        bulk = money(prices['stats_bulk'])
+        small = money(prices['stats']) * ((count + 1) // 2)
+        return (bulk > 0 and bulk <= small * 2
+                and store.reserved_cost() + bulk <= money(store.config['budget_usd'])
+                and len(store.reservations()) < store.config['max_requests'])
+    except (KeyError, StopRun):
+        return False
+
+
+def prefetch_bulk_stats(store, client, targets, channel):
+    attempts = restore_stats_and_attempts(store)
+    ids = set()
+    for target in targets:
+        h = store.state['authors'].get(target['author_id'] + ':' + channel)
+        if not h: continue
+        baseline = select_baseline(target, h['videos'].values(), store.config, stamp(store.state['as_of']))
+        if (target['id'] in h['videos'] and len(baseline) >= store.config['min_baseline_count']
+                and history_sufficient(target, baseline, h, store.config)):
+            ids.update([target['id']] + [v['id'] for v in baseline])
+    missing = sorted(i for i in ids if attempts[i] == 0 and store.state['stats'].get(i, {}).get('play_count') is None)
+    if not bulk_worthwhile(store, len(missing)): return
+    try:
+        get_stats(store, client, missing)
+    except (APIError, BudgetStop) as error:
+        # Per-ID attempts are retained, so the following per-target scoring cannot
+        # turn a failed bulk request into another paid small request.
+        record_stop(store, 'verify', error)
+
+
 def get_stats(store, client, ids):
     attempts = restore_stats_and_attempts(store)
     retry = getattr(client, 'retry_failed', False)
     missing = sorted({i for i in ids if store.state['stats'].get(i, {}).get('play_count') is None
                       and (attempts[i] == 0 or (retry and attempts[i] < 2))})
-    batches = [missing[start:start + 2] for start in range(0, len(missing), 2)]
-    calls = [('stats', {'aweme_ids': ','.join(batch)}, {'refresh': True} if retry and any(attempts[i] for i in batch) else {}) for batch in batches]
+    batches = []
+    operations = []
+    covered = set()
+    seen_bulk = set()
+    blocked = getattr(store, '_bulk_attempted_this_verify', set())
+    for event in store.events:
+        if event.get('event') != 'request' or event.get('operation') != 'stats_bulk': continue
+        batch = event['params']['aweme_ids'].split(',')
+        group = tuple(batch)
+        if group in seen_bulk: continue
+        seen_bulk.add(group)
+        if retry and not set(batch) & blocked and set(batch) & set(missing) and all(attempts[i] < 2 for i in batch):
+            batches.append(batch); operations.append('stats_bulk')
+        # An explicit retry of a prior bulk request keeps the original grouping.
+        # Never silently move a missing/failed bulk ID to the small endpoint.
+        covered.update(batch)
+    missing = [i for i in missing if i not in covered]
+    operation = 'stats_bulk' if bulk_worthwhile(store, len(missing)) else 'stats'
+    size = 50 if operation == 'stats_bulk' else 2
+    for start in range(0, len(missing), size):
+        batches.append(missing[start:start + size]); operations.append(operation)
+    calls = [(op, {'aweme_ids': ','.join(batch)}, {'refresh': True} if retry and any(attempts[i] for i in batch) else {}) for op, batch in zip(operations, batches)]
+    for op,batch in zip(operations,batches):
+        if op == 'stats_bulk': blocked.update(batch)
+    store._bulk_attempted_this_verify = blocked
     errors = []
     for batch, (result, error) in zip(batches, call_many(client, calls)):
         if error:
@@ -352,6 +409,7 @@ def get_stats(store, client, ids):
         for vid, data in result['statistics'].items():
             store.state['stats'][vid] = dict(data)
         store.save()
+    refresh_changed_results(store)
     if errors:
         raise next((e for e in errors if not isinstance(e, (APIError, BudgetStop))), errors[0])
 
@@ -363,6 +421,27 @@ def verification_fingerprint(store, target, result):
                    'criteria': {k: store.config.get(k) for k in ('max_followers', 'min_ratio', 'baseline_count',
                                 'min_baseline_count', 'comparison_window_days', 'min_age_days')},
                    'statistics': {vid: store.state['stats'].get(vid) for vid in ids}})
+
+
+def refresh_changed_results(store):
+    """A bulk refresh can also change comparisons of already completed cases."""
+    changed = False
+    for vid, previous in list(store.state['results'].items()):
+        if previous.get('status') not in ('qualified', 'limited', 'below_threshold'): continue
+        target = store.state['candidates'].get(vid)
+        if not target or previous.get('verification_fingerprint') == verification_fingerprint(store, target, previous): continue
+        history_key = previous.get('history_key')
+        history = store.state['authors'].get(history_key)
+        if not history or history.get('author_id') != target.get('author_id'): continue
+        baseline = select_baseline(target, history['videos'].values(), store.config, stamp(store.state['as_of']))
+        current = score(target, baseline, store.state['stats'], store.config,
+                        listed=vid in history['videos'], coverage=history_sufficient(target, baseline, history, store.config),
+                        as_of=stamp(store.state['as_of']))
+        current['history_key'] = history_key
+        current['verification_fingerprint'] = verification_fingerprint(store, target, current)
+        store.state['results'][vid] = current
+        changed = True
+    if changed: store.save()
 
 
 def verification_batch_size(store):
@@ -383,6 +462,7 @@ def verification_batch_size(store):
 
 def verify(store, client, channel='normal'):
     c, s = store.config, store.state
+    store._bulk_attempted_this_verify = set()
     restore_stats_and_attempts(store)
     all_reviewed = [v for v in s['candidates'].values() if v['review']['decision'] == 'include']
     if not all_reviewed:
@@ -422,6 +502,7 @@ def verify(store, client, channel='normal'):
             batch = [t for t in selected[index:batch_end]
                      if t['author_id'] not in history_failures]
             history_failures.update(prefetch_histories(store, client, batch, channel))
+            prefetch_bulk_stats(store, client, batch, channel)
         baseline = []
         if not target.get('author_id'):
             s['results'][target['id']] = score(target, [], s['stats'], c, listed=False)

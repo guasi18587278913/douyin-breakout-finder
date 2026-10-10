@@ -138,10 +138,11 @@ def parse_price(payload, endpoint):
     return str(amount)
 
 
-def fetch_prices():
+def fetch_prices(include_bulk=False):
     from transport import request
     prices = {}
     for op, (_, endpoint) in ENDPOINTS.items():
+        if op == 'stats_bulk' and not include_bulk: continue
         url = BASE + '/api/v1/tikhub/user/get_endpoint_info?' + urllib.parse.urlencode({'endpoint': endpoint})
         try:
             status, raw = request(url, timeout=12, limit=1024*1024)

@@ -123,7 +123,7 @@ def unresolved_data(store):
         phase = stop.get('phase')
         if phase not in ('search', 'verify'):
             continue
-        relevant = ('search',) if phase == 'search' else ('posts', 'stats')
+        relevant = ('search',) if phase == 'search' else ('posts', 'stats', 'stats_bulk')
         try:
             stopped_at = stamp(stop['at'])
             recovered = any(e.get('event') == 'saved' and operations.get(e.get('key'), e.get('operation')) in relevant and stamp(e['at']) > stopped_at for e in store.events)

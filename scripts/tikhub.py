@@ -15,6 +15,7 @@ ENDPOINTS = {
     'search': ('POST', '/api/v1/douyin/search/fetch_video_search_v2'),
     'posts': ('GET', '/api/v1/douyin/app/v3/fetch_user_post_videos'),
     'stats': ('GET', '/api/v1/douyin/app/v3/fetch_video_statistics'),
+    'stats_bulk': ('GET', '/api/v1/douyin/app/v3/fetch_multi_video_statistics'),
     'comments': ('GET', '/api/v1/douyin/app/v3/fetch_video_comments'),
 }
 
@@ -139,7 +140,7 @@ def normalize(op, payload, params):
         if more and cursor is None:
             raise APIError('Author pagination cursor is missing or invalid.')
         return {'videos': list(items.values()), 'has_more': more, 'cursor': cursor}
-    if op == 'stats':
+    if op in ('stats', 'stats_bulk'):
         if not isinstance(data.get('statistics_list'), list):
             raise APIError('Statistics response schema changed: statistics_list is missing.')
         allowed = set(params['aweme_ids'].split(','))
