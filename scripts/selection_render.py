@@ -84,12 +84,27 @@ def card(store, vid, covers):
     return out + '</tbody></table></div></details></article>'
 
 
+def empty_intro(store):
+    """No-case outcome statements come from saved facts, never model guesses."""
+    from research import review_fingerprint
+    candidates = store.state['candidates']
+    relevant = sum(v.get('review', {}).get('decision') == 'include'
+                   and v['review'].get('method') == 'human-or-agent'
+                   and v['review'].get('input_hash') == review_fingerprint(store, vid)
+                   for vid, v in candidates.items())
+    found = '本轮取得 '+str(len(candidates))+' 条候选作品'
+    if relevant:
+        found += '，其中 '+str(relevant)+' 条已通过内容相关性复核'
+    return [found+'。目前还没有核验出同时符合本次粉丝范围、账号对照和播放倍数条件的案例，因此暂不提供基于案例的解读。']
+
+
 def render_selection(store, story):
     covers = read_json(store.root / 'covers.json', {})
     if not isinstance(covers, dict):
         covers = {}
     out = '<section class="selection-report"><h1 class="selection-opening">'+E(opening(store, story))+'</h1>'
-    out += ''.join('<p>'+E(p)+'</p>' for p in story['intro'])
+    intro = story['intro'] if story['cases'] else empty_intro(store)
+    out += ''.join('<p>'+E(p)+'</p>' for p in intro)
     if story['status'] != 'complete':
         out += '<p class="selection-incomplete">部分数据或核验没有完成，以下只交代本轮已取得的信息；不能据此判断这个主题没有爆款。</p>'
     for n, lesson in enumerate(story['lessons'], 1):
@@ -108,9 +123,12 @@ def render_selection(store, story):
         out += '<p class="selection-takeaway">'+E(lesson['takeaway'])+'</p>'
         out += ''.join(card(store, case['video_id'], covers) for case in lesson['cases'])
         out += '</section>'
+    closing = story['closing'] if story['cases'] else {
+        'questions': ['你想解决的具体问题是什么？', '你更想参考教程、案例，还是观点表达？'],
+        'paragraphs': ['可以把主题缩小到一个具体用途，再开始下一轮研究。这份记录会保留，便于之后核对。']}
     out += '<section class="selection-closing"><h2>下次找选题，先想清楚这几件事</h2><ol>'
-    out += ''.join('<li>'+E(q)+'</li>' for q in story['closing']['questions'])+'</ol>'
-    out += ''.join('<p>'+E(p)+'</p>' for p in story['closing']['paragraphs'])+'</section>'
+    out += ''.join('<li>'+E(q)+'</li>' for q in closing['questions'])+'</ol>'
+    out += ''.join('<p>'+E(p)+'</p>' for p in closing['paragraphs'])+'</section>'
     from selection_report import eligible_ids
     more = sorted(eligible_ids(store) - set(story['cases']), key=lambda vid: -(store.state['results'][vid].get('ratio') or 0))
     if more:
@@ -121,6 +139,7 @@ def render_selection(store, story):
     title_only = any(c['basis'] == 'title-description' for c in story['cases'].values())
     basis = '本轮没有足够的合格案例用于解读。' if not story['cases'] else '本报告包含依据标题与简介的选题解读。' if title_only else '案例解读引用了本轮登记的内容证据。'
     out += '<details class="selection-notes"><summary>数据来源与解读依据</summary><p>数据采集于 '+E(collected)+'（北京时间）。'+basis+'你可以结合自己的内容尝试，实际表现还需要验证。</p><ul>'
-    out += ''.join('<li>'+E(note)+'</li>' for note in story['limitations'])
+    limitations = story['limitations'] if story['cases'] else ['这份记录没有可供解读的充分核验案例，不据此判断整个主题的创作机会。']
+    out += ''.join('<li>'+E(note)+'</li>' for note in limitations)
     out += '</ul></details></section>'
     return out

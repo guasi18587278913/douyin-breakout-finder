@@ -49,6 +49,25 @@ class SelectionReportContract(unittest.TestCase):
         self.assertIn('依据标题与简介', doc)
         self.assertNotIn('正文证据待补</h3>', doc)
 
+    def test_empty_report_cannot_misstate_why_no_case_qualified(self):
+        for result in self.store.state['results'].values():
+            if result['status'] == 'qualified':result['status'] = 'below_threshold'
+        answer = selection_answer(analysis_packet(self.store))
+        false_claim = '没有一条作品通过内容相关性复核。'
+        answer['intro'] = [false_claim]
+        answer['closing']['paragraphs'] = [false_claim]
+        answer['limitations'] = [false_claim]
+        before = (self.store.root / 'requests.jsonl').read_bytes()
+        accept_research(self.store, answer, expected_format=FORMAT)
+        summary = render(self.store)
+        doc = (self.store.root / 'report.html').read_text(encoding='utf-8')
+        self.assertNotIn(false_claim, doc)
+        self.assertIn('条已通过内容相关性复核', doc)
+        self.assertIn('目前还没有核验出', doc)
+        self.assertIn('部分数据或核验没有完成', doc)
+        self.assertFalse(summary['report_complete'])
+        self.assertEqual(before, (self.store.root / 'requests.jsonl').read_bytes())
+
     def test_unreviewed_and_unqualified_cases_are_rejected(self):
         vid = self.answer['lessons'][0]['cases'][0]['video_id']
         for field, value in [('method', 'keyword-rule'), ('decision', 'unsure')]:
