@@ -77,6 +77,13 @@ class CachedTests(unittest.TestCase):
         self.assertIn((ROOT/'references/report-standard.md').read_text(),messages_for(self.packet)[0]['content'])
         self.assertIn((ROOT/'references/report-example.json').read_text(),messages_for(self.packet)[0]['content'])
 
+    def test_pending_candidate_without_play_result_is_not_counted_as_qualified(self):
+        vid=self.packet['candidates'][0][1]
+        self.work.state['results'].pop(vid,None)
+        packet=packet_for(self.work)
+        index=next(r[0] for r in packet['candidates'] if r[1]==vid)
+        self.assertTrue(packet['data_incomplete']);self.assertNotIn(index,packet['numerically_qualified'])
+
     def test_joint_answer_requires_every_candidate_and_valid_statistics(self):
         answer=self.response(self.packet)
         bad=copy.deepcopy(answer);bad['reviews']=[]

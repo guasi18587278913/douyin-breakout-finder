@@ -170,10 +170,10 @@ def packet_for(store):
     candidates = [v for v in store.state['candidates'].values() if not numeric_exclusion(store,v)]
     candidates.sort(key=lambda v:v['id'])
     rows = [[i,v['id'],v['title']] for i,v in enumerate(candidates)]
-    qualified = [i for i,v in enumerate(candidates) if store.state['results'][v['id']]['status']=='qualified']
+    qualified = [i for i,v in enumerate(candidates) if store.state['results'].get(v['id'],{}).get('status')=='qualified']
     return {'protocol':PROTOCOL,'topic':store.config['topic'],'scope':store.config['scope'],
         'focus':store.config.get('intake',{}).get('focus','all'), 'candidates':rows,
-        'numerically_qualified':qualified,'data_incomplete':any(r['status']=='pending' for r in store.state['results'].values())}
+        'numerically_qualified':qualified,'data_incomplete':any(v['id'] not in store.state['results'] for v in candidates) or any(r['status']=='pending' for r in store.state['results'].values())}
 
 
 def messages_for(packet, feedback=''):
@@ -264,6 +264,10 @@ def run_cached(session, source):
                 from webapp.expanded_analysis import expand
                 expand(session,source,replay);expanded=True
                 previous=read_json(marker,{});previous['phase']='writing';atomic_json(marker,previous)
+        if expanded:
+            from workflow import verify
+            if any(v['review']['decision']=='include' for v in replay.state['candidates'].values()):
+                session.timed('verify',lambda:verify(replay,CachedClient(replay)))
         packet=packet_for(replay)
         request_plan={} if expanded else model.plan('cached-report',packet,'')
         atomic_json(replay.root/'automatic-plan.json', {k:v for k,v in request_plan.items() if k!='messages'})
