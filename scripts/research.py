@@ -9,6 +9,15 @@ from core import StopRun, atomic_json, digest, now, read_json
 from workflow import apply_review, keyword_quality, MAX_SEARCH_ROUNDS
 
 SELECTED=('qualified','limited')
+RELEVANCE_POLICY = (
+    '相关性以 topic、scope 中的主题、受众和明确纳入/排除条件为准。'
+    '“寻找选题、学习切入、验证方向”是使用者做研究的目的，不是候选作品必须讨论的题材。'
+    '例如研究 AI 自媒体且未限定方向时，AI 工具教程、图片处理、视频制作方法和 AIGC 成品都可以是选题分析的对象；'
+    '不能仅因作品没有讲运营、起号、涨粉或教人选题就排除，也不能额外要求正文证明这些内容。'
+    '仍须依据具体标题、简介或已登记证据确认主题相关；仅出现泛化 AI 标签不自动纳入。'
+    '用户明确限定运营、教程等方向时必须遵守，不能以这个例子扩张其他研究主题。'
+    '本步骤只判断内容相关性，粉丝和播放资格由程序独立执行，不在理由中猜测或改写数字门槛。'
+)
 
 
 def text(value,name,limit=3000,required=True):
@@ -80,7 +89,8 @@ def add_evidence(store,vid,source,kind,note):
 def review_fingerprint(store, vid):
     """Bind semantic decisions to their input, not to an agent's completion claim."""
     candidate = store.state['candidates'][vid]
-    return digest({'conditions': {key: store.config.get(key) for key in
+    return digest({'review_policy': RELEVANCE_POLICY,
+                   'conditions': {key: store.config.get(key) for key in
                                   ('topic', 'scope', 'intake', 'max_followers')},
                    'candidate': {key: candidate.get(key) for key in
                                  ('id', 'title', 'author_id', 'author_name', 'followers', 'likes')},
@@ -112,7 +122,7 @@ def review_packet(store,round_number):
             'candidate_count':len(store.state['candidates']),
             'reused_review_count':len(store.state['candidates']) - len(pending),
             'queries':[{k:q.get(k) for k in ['pages','complete','error']}|{'keyword':kw} for kw,q in store.state['queries'].items()],
-            'instructions':'逐条语义复核，不能用连续词匹配代替理解。candidates 仅包含新增、证据或研究条件改变、或上次不确定的候选；旧判断由程序合并，不要重复输出。小号主榜仍遵守粉丝限制。可建议至多3个同主题的新搜索词：优先具体用途、问题或使用场景，避开只反复返回大号或重复作品的词。程序会先核验已有小号，再按结果决定换词或翻页；正文精选数量不限制总结果数。round>=2时next_keywords必须为空，最多补搜两轮；不能调整预算。返回 reviews（本次 candidates 的全部ID）、next_keywords、search_reason。'}
+            'instructions':RELEVANCE_POLICY+'逐条语义复核，不能用连续词匹配代替理解。candidates 仅包含新增、证据或研究条件改变、或上次不确定的候选；旧判断由程序合并，不要重复输出。小号主榜仍遵守粉丝限制。可建议至多3个同主题的新搜索词：优先具体用途、问题或使用场景，避开只反复返回大号或重复作品的词。程序会先核验已有小号，再按结果决定换词或翻页；正文精选数量不限制总结果数。round>=2时next_keywords必须为空，最多补搜两轮；不能调整预算。返回 reviews（本次 candidates 的全部ID）、next_keywords、search_reason。'}
 
 
 def accept_review(store,answer,expected=None):

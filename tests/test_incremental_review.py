@@ -2,6 +2,7 @@ import copy
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -54,6 +55,16 @@ class IncrementalReview(unittest.TestCase):
         source=Path(self.temp.name)/'note.txt';source.write_text('合成证据：新的内容说明此前标题的理解需要重新核对。这段文字仅用于测试审核依据变化。',encoding='utf-8')
         add_evidence(self.store,vids[0],source,'video-notes','合成测试')
         self.assertEqual(set(pending_reviews(self.store)),{vids[0]})
+
+    def test_relevance_policy_change_invalidates_all_prior_decisions(self):
+        self.add(0, 2)
+        with patch('research.RELEVANCE_POLICY', 'Previous review instructions'):
+            self.accept(review_packet(self.store, 0))
+            self.assertEqual(pending_reviews(self.store), {})
+        packet = review_packet(self.store, 1)
+        self.assertEqual(len(packet['candidates']), 2)
+        self.accept(packet)
+        self.assertEqual(pending_reviews(self.store), {})
 
     def test_omitted_or_extra_answers_do_not_change_existing_reviews(self):
         self.add(0,2);packet=review_packet(self.store,0)
