@@ -37,6 +37,8 @@
 
 ## 独立验证职责
 
+- 报告可读、检索到达策略停止点、数量达标分别判定。`audit_run` 的 PASS 只指 `saved_evidence_integrity`；读取 `completion` 判断目标，不能将报告 ready 或少量精选替代总体完成。详见 `docs/completion-verification.md`。
+
 - 执行者记录实际输入、逐条判断、请求账本与产物；不能手写 PASS 或把已处理的一部分称为全部完成。
 - 每次新版报告生成后，独立读取磁盘运行目录核对搜索缓存中的有效候选、逐 ID 去向、全部已核验终态、预算、报告字段与实际 HTML。只有这些检查通过，网页才进入完成状态。待复核与未核验条目仍计入记录，不能冒充已处理。
 - 维护交付时使用 `tests/browser_delivery.py` 统一检查指定源码、实际安装目录、运行进程启动指纹、实时磁盘、最终返回报告、直接跳转与新研究入口。参数和命令见 `docs/delivery-verification.md`。仅源码测试或 `check_delivery.py` 的机械检查通过，不代表浏览器体验已验收。

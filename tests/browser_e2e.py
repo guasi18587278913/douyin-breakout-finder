@@ -4,6 +4,10 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright,expect
 p=argparse.ArgumentParser();p.add_argument('--bundle',required=True);p.add_argument('--out',required=True)
 a=p.parse_args();bundle=Path(a.bundle).resolve();out=Path(a.out).resolve();out.mkdir(parents=True,exist_ok=True)
+tested_commit=os.getenv('ACCEPTANCE_SHA') or os.getenv('GITHUB_SHA','local')
+if tested_commit!='local':
+ marker=json.loads((bundle/'.installation.json').read_text(encoding='utf-8'))
+ assert marker['ref']==tested_commit,'Downloaded installation does not match the commit being tested.'
 sys.path.insert(0,str(bundle/'scripts'))
 from wizard import make_server
 server=make_server(out/'runs');threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -86,7 +90,7 @@ try:
   assert not errors,errors;checks.append('no JavaScript runtime errors')
   response=context.request.post(base+'/api/quit',data={},headers={'X-Wizard':'1','Origin':base});assert response.status==200
   mobile.close();context.close();browser.close()
- (out/'acceptance.json').write_text(json.dumps({'source_commit':os.getenv('GITHUB_SHA','local'),
+ (out/'acceptance.json').write_text(json.dumps({'source_commit':tested_commit,
   'runner':platform.platform(),'python':platform.python_version(),'bundle':str(bundle),
   'passed':len(checks),'failed':0,'checks':checks,'real_tikhub_calls':0,
   'real_client_sessions':0,'real_model_inference_calls':0},ensure_ascii=False,indent=2)+'\n')

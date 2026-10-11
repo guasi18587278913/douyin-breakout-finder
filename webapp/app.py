@@ -65,10 +65,24 @@ def create_app(settings=None):
         return job
     def public_job(job):
         folder=run_dir(settings,job['id'])
-        return {**{k:job[k] for k in ('id','topic','focus','mode','status','message','created_at','updated_at','cancel_requested')},
+        from webapp.job_outcome import assessment, cannot_recover_data
+        from completion import outcome
+        result = assessment(folder) if job['status'] not in ('queued','running') else None
+        status,message = job['status'],job['message']
+        if status in ('done','report_ready'):
+            if result:status,message=outcome(result,job['mode']=='demo')
+            else:status,message='needs_analysis','已有报告待核对，尚不能确认本轮研究完成。'
+        blocked = cannot_recover_data(result)
+        if blocked and status in ('error','interrupted','needs_analysis','needs_data'):
+            status,message='needs_data','已有资料不足以核验出可解读案例，重复整理不能补齐数据。本轮尚未完成。'
+        return {**{k:job[k] for k in ('id','topic','focus','mode','created_at','updated_at','cancel_requested')},
+                'status':status,'message':message,
+                'completion':{**{k:result[k] for k in ('report','quantity')},
+                              'retrieval':{k:result['retrieval'][k] for k in ('legal_stop','all_candidates_resolved')}} if result else None,
+                'report_ready':bool(result and result['report']['ready']),
                 'progress':json.loads(job['progress_json']),
                 'report_url':'/reports/'+job['id']+'/report.html' if (folder/'report.html').is_file() else None,
-                'can_resume':job['mode']=='live' and job['status'] in ('interrupted','error','needs_analysis','cancelled') and (folder/'state.json').is_file()}
+                'can_resume':not blocked and job['mode']=='live' and status in ('interrupted','error','needs_analysis','cancelled') and (folder/'state.json').is_file()}
     def limit(request,bucket,count,seconds):
         address=request.client.host if request.client else 'unknown'
         if not db.allow(bucket+':'+hashlib.sha256(address.encode()).hexdigest(),count,seconds):
@@ -179,7 +193,7 @@ def create_app(settings=None):
     def resume(request:Request,job_id:str):
         job=own(request,job_id);limit(request,'resume',8,3600)
         if not public_job(job)['can_resume']:raise HTTPException(409,'当前没有可接续的研究数据。')
-        return public_job(db.resume(job_id,job['user_id']))
+        return public_job(db.resume(job_id,job['user_id'],allow_completed_repair=job['status'] in ('done','report_ready')))
     @app.get('/reports/{job_id}/{filename:path}')
     def report(request:Request,job_id:str,filename:str):
         own(request,job_id)

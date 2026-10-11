@@ -207,7 +207,20 @@ class TikHubClient:
         if status == 403:
             raise StopRun('TikHub 拒绝访问。请检查 Key 权限、账号状态与网络；程序没有自动重试。')
         if status != 200:
-            raise APIError('TikHub 暂时无法完成查询（HTTP %s），已保留当前结果。' % status)
+            error = APIError('TikHub 暂时无法完成查询（HTTP %s），已保留当前结果。' % status)
+            # Keep a provider correlation ID for investigation, never its full
+            # body, echoed request, free text or credential-bearing headers.
+            diagnostic = {'http_status':status}
+            try:
+                response = json.loads(raw)
+                code=response.get('code')
+                if type(code) is int and self.key not in str(code):diagnostic['provider_code']=code
+                request_id = response.get('request_id')
+                if (isinstance(request_id,str) and re.fullmatch(r'[A-Za-z0-9_-]{6,100}',request_id)
+                        and self.key not in request_id):diagnostic['provider_request_id']=request_id
+            except (ValueError,TypeError,AttributeError):pass
+            error.diagnostic=diagnostic
+            raise error
         try:
             return json.loads(raw)
         except (ValueError, UnicodeError):
@@ -295,7 +308,8 @@ class TikHubClient:
                 elif not isinstance(error, APIError):
                     self._fatal = StopRun(safe_error if isinstance(error, StopRun) else '本地保存没有完成，已停止后续新查询。')
                 try:
-                    self.store.event({'event': 'failed', 'key': key, 'operation': op, 'error': safe_error})
+                    self.store.event({'event': 'failed', 'key': key, 'operation': op, 'error': safe_error,
+                                      'diagnostic':getattr(error,'diagnostic',{})})
                 except OSError:
                     pass
             if isinstance(error, StopRun):

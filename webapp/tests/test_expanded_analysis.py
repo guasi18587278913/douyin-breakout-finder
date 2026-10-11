@@ -18,13 +18,6 @@ class ExpansionTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         self.source,_=run_demo(self.root/'source')
-        records={p.stem:read_json(p) for p in (self.source.root/'cache').glob('*.json')}
-        events=[]
-        for e in self.source.events:
-            events.append(e)
-            if e['event']=='reserved':
-                r=records[e['key']];events.append({'event':'request','key':e['key'],'operation':r['operation'],'params':r['params'],'at':e['at']})
-        (self.source.root/'requests.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events));self.source.events=events
         self.source.config['discover_author_history']=True
         atomic_json(self.source.root/'config.json',self.source.config);self.source.state['config_hash']=digest(self.source.config);self.source.save()
     def test_history_discovery_has_exact_author_provenance_and_complete_accounting(self):

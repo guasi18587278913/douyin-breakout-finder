@@ -5,7 +5,123 @@ from html.parser import HTMLParser
 from pathlib import Path
 import copy
 
-from core import Store, StopRun, digest, history_sufficient, read_json, score, select_baseline, stamp, within_search
+from core import APIError, Store, StopRun, digest, history_sufficient, read_json, score, select_baseline, stamp, within_search, money
+
+
+def raw_facts(store, records):
+    """Rebuild numeric inputs in memory. Never save or fetch on an audit read."""
+    from workflow import CachedClient, fetch_history, restore_stats_and_attempts
+    facts = copy.copy(store)
+    facts.state = copy.deepcopy(store.state)
+    facts.state.update(authors={}, stats={}, stats_checked={})
+    facts.save = lambda: None
+    restore_stats_and_attempts(facts)
+    for _, record in records:
+        if record['operation'] != 'search': continue
+        for video in record['data']['videos']:
+            if video['id'] in facts.state['candidates']:
+                facts.state['candidates'][video['id']].update({k:v for k,v in video.items() if v is not None})
+    client = CachedClient(facts)
+    channels = {(r['params'].get('sec_user_id'),r['params'].get('channel','normal'))
+                for _,r in records if r['operation']=='posts'}
+    for candidate in facts.state['candidates'].values():
+        if not candidate.get('author_id'): continue
+        for channel in ('normal','lite'):
+            if (candidate['author_id'],channel) not in channels:continue
+            try: fetch_history(facts, client, candidate,channel)
+            except APIError: pass
+    return facts
+
+
+def execution_evidence(store, records, rows):
+    """Recalculate frontiers and affordable follow-up space; do not trust stop text."""
+    from workflow import MAX_SEARCH_ROUNDS
+    config = store.config
+    searches = {}
+    for key, record in records:
+        if record['operation'] == 'search':
+            searches.setdefault(record['params']['keyword'], []).append((key, record))
+    queries = []
+    for keyword, pages in searches.items():
+        # Follow provider cursor links, not a stored 'complete' flag or page count.
+        chain, cursor, seen = [], 0, set()
+        while cursor not in seen:
+            matches = [(k,r) for k,r in pages if r['params']['cursor'] == cursor]
+            if not matches: break
+            key, record = matches[-1]; chain.append(key); seen.add(cursor)
+            data = record['data']
+            if not data['has_more']: break
+            cursor = data.get('cursor')
+        last = next((r for k,r in pages if chain and k == chain[-1]), None)
+        end = bool(last and not last['data']['has_more'])
+        guard = bool(last and last['data']['has_more'] and
+                     (last['data'].get('cursor') is None or last['data'].get('cursor') in seen))
+        queries.append({'keyword': keyword, 'pages': len(chain), 'request_keys': chain,
+                        'provider_end': end, 'cursor_guard': guard,
+                        'can_paginate': bool(last and not end and not guard),
+                        'page_limit_reached': len(chain) >= config['max_search_pages']})
+    cache_keys = {key for key,_ in records}
+    requests = [e for e in store.events if e.get('event') == 'request']
+    reserved = store.reservations()
+    requested_keys = {e['key'] for e in requests}
+    last_saved = {e['key']:i for i,e in enumerate(store.events) if e.get('event')=='saved'}
+    last_failed = {e['key']:i for i,e in enumerate(store.events) if e.get('event')=='failed'}
+    missing = [e for e in reserved if e['key'] not in cache_keys
+               or (not store.state.get('demo') and e['key'] not in requested_keys)
+               or last_failed.get(e['key'],-1)>last_saved.get(e['key'],-1)]
+    failed_search = sorted({e['key'] for e in missing if e['operation'] == 'search'})
+    remaining = config['max_requests'] - len(reserved)
+    credit = money(config['budget_usd']) - store.reserved_cost()
+    prices = config['pricing']['usd_per_request']
+    stats_calls = (config['baseline_count'] + 2) // 2
+    reserve = config['max_author_pages'] + stats_calls
+    reserve_usd = money(prices['posts']) * config['max_author_pages'] + money(prices['stats']) * stats_calls
+    batches = store.state.get('search_batches', [])
+    search_keys = [e['key'] for e in reserved if e['operation'] == 'search']
+    flattened = [key for batch in batches for key in batch]
+    source_records = dict(records)
+    first_words = {source_records[key]['params']['keyword'] for key in (batches[0] if batches else [])
+                   if key in source_records and source_records[key]['operation']=='search'}
+    bounded_rounds = (store.config.get('search_policy') == 'bounded-rounds-v1'
+                      and not failed_search
+                      and first_words == set(config['keywords'])
+                      and len(flattened) == len(set(flattened))
+                      and len(batches) == MAX_SEARCH_ROUNDS
+                      and all(0 < len(batch) <= (3 if i == 0 else 2) for i,batch in enumerate(batches))
+                      and flattened == search_keys)
+    all_seeds = set(config['keywords']) <= {q['keyword'] for q in queries}
+    page_bounds = bool(queries) and all(q['provider_end'] or q['page_limit_reached'] for q in queries)
+    decisions = store.state.get('search_decisions', [])
+    last_decision = decisions[-1] if decisions else {}
+    # Empty proposals are an actual model decision, not an inferred stop. A
+    # bounded exhausted keyword pool is sufficient only with this bound input.
+    no_extension = (page_bounds and last_decision.get('proposed_keywords') == []
+                    and last_decision.get('selected_keywords') == []
+                    and last_decision.get('request_count') == len(reserved)
+                    and last_decision.get('candidate_review_sha256') ==
+                    digest({vid:v.get('review') for vid,v in store.state['candidates'].items()}))
+    reason, legal = 'unproven_stop', False
+    if failed_search: reason = 'search_failed'
+    elif remaining <= 0: reason, legal = 'request_limit', True
+    elif credit < money(prices['search']): reason, legal = 'cost_limit', True
+    elif all_seeds and (remaining < reserve + 1 or credit < reserve_usd + money(prices['search'])):
+        reason, legal = 'verification_reserve', True
+    elif all_seeds and bounded_rounds: reason, legal = 'search_round_limit', True
+    elif all_seeds and no_extension: reason, legal = 'known_keyword_scope_and_no_proposed_extension', True
+    elif all_seeds and page_bounds: reason = 'known_keywords_exhausted_further_strategy_unproven'
+    unresolved = [r['id'] for r in rows if r['status'] in ('needs_review','pending','not_verified','limited','missing')]
+    return {'legal_stop': legal, 'stop_reason': reason,
+            'stop_kind':'request_fault' if failed_search else 'policy_limit' if legal else 'evidence_missing',
+            'stopping_allowed': bool(legal or failed_search), 'queries': queries,
+            'unattempted_seed_keywords': sorted(set(config['keywords']) - {q['keyword'] for q in queries}),
+            'unresolved_ids': unresolved, 'all_candidates_resolved': not unresolved,
+            'failed_search_request_keys': failed_search,
+            'unavailable_request_keys': [e['key'] for e in missing],
+            'remaining_requests': remaining, 'remaining_usd': str(credit),
+            'followup_reserve_requests': reserve, 'followup_reserve_usd': str(reserve_usd),
+            'search_rounds_proven': len(batches) if bounded_rounds else None,
+            'last_search_decision': last_decision,
+            'scope_exhaustive': False}
 
 
 class ReportHTML(HTMLParser):
@@ -42,13 +158,19 @@ def audit_run(root, require_report=True):
         checks.append({'id': name, 'status': 'PASS' if passed else 'FAIL', 'observed': observed})
 
     source_ids, filtered_ids = set(), set()
-    for path in sorted((store.root / 'cache').glob('*.json')):
-        record = read_json(path)
+    records = [(p.stem, read_json(p)) for p in (store.root / 'cache').glob('*.json')]
+    records.sort(key=lambda pair:(pair[1].get('captured_at',''),pair[0]))
+    request_keys = {e['key'] for e in store.events if e.get('event') == 'request'}
+    for event in store.events:
+        if event.get('event')=='request':
+            check('request:' + event['key'], event['key']==digest({'op':event['operation'],'params':event['params']}),
+                  {'operation':event['operation'],'key':event['key']})
+    for key, record in records:
+        check('cache:' + key, key == digest({'op':record['operation'],'params':record['params']})
+              and (state.get('demo') or key in request_keys), {'operation':record['operation'],'key':key})
         if record.get('operation') != 'search':
             continue
         params = record['params']
-        check('cache:' + path.stem, path.stem == digest({'op': 'search', 'params': params}),
-              {'operation': 'search', 'key': path.stem})
         for video in record['data']['videos']:
             (source_ids if within_search(video, config, stamp(state['as_of'])) else filtered_ids).add(video['id'])
     queried_ids = {vid for query in state['queries'].values() for vid in query.get('ids', [])}
@@ -73,7 +195,12 @@ def audit_run(root, require_report=True):
     from selection_report import FORMAT, eligible_ids, delivery_target
     pending = pending_reviews(store)
     rows = []
+    facts = raw_facts(store, records)
     for vid, candidate in sorted(candidates.items()):
+        identity_fields = ('id','author_id','followers','published_at','title')
+        raw_candidate = facts.state['candidates'][vid]
+        check('candidate-source:' + vid, all(candidate.get(k) == raw_candidate.get(k) for k in identity_fields),
+              {'fields':identity_fields})
         review, result = candidate.get('review', {}), results.get(vid, {})
         if vid in pending:
             status, reason = 'needs_review', '未审核、判断不确定或审核依据已改变'
@@ -81,10 +208,16 @@ def audit_run(root, require_report=True):
             status, reason = 'excluded', review.get('reason', '')
         else:
             status, reason = result.get('status', 'not_verified'), result.get('reason', '尚未进行播放核验')
-        rows.append({'id': vid, 'status': status, 'reason': reason})
+        rows.append({'id': vid, 'status': status, 'reason': reason,
+                     'relevance_decision':review.get('decision'), 'relevance_reason':review.get('reason'),
+                     'numeric_status':result.get('status'),
+                     'exclusion_kind': 'objective' if candidate.get('followers') is not None and candidate['followers'] > config['max_followers'] else 'relevance' if review.get('decision') == 'exclude' else None})
         check('candidate:' + vid, bool(reason) and status in
               ('needs_review', 'excluded', 'qualified', 'limited', 'below_threshold', 'pending', 'not_verified'),
               {'status': status, 'reason': reason})
+    rows.extend({'id':vid,'status':'missing','reason':'原始缓存中的候选未进入运行状态',
+                 'relevance_decision':None,'relevance_reason':None,'numeric_status':None,'exclusion_kind':None}
+                for vid in sorted(all_source_ids-set(candidates)))
     eligible = eligible_ids(store)
     for vid in sorted(results):
         if vid not in candidates or candidates[vid].get('review', {}).get('decision') != 'include':
@@ -92,10 +225,12 @@ def audit_run(root, require_report=True):
         candidate, recorded = candidates[vid], results[vid]
         if recorded.get('status') not in ('qualified', 'limited', 'below_threshold', 'excluded'):
             continue
-        history = state['authors'].get(recorded.get('history_key', str(candidate.get('author_id')) + ':normal'))
+        raw_candidate = facts.state['candidates'][vid]
+        candidate = raw_candidate
+        history = facts.state['authors'].get(recorded.get('history_key', str(candidate.get('author_id')) + ':normal'))
         early_exclusion = candidate.get('followers') is None or candidate['followers'] > config['max_followers']
         baseline = select_baseline(candidate, history['videos'].values(), config, stamp(state['as_of'])) if history and not early_exclusion else []
-        calculated = score(candidate, baseline, state['stats'], config,
+        calculated = score(candidate, baseline, facts.state['stats'], config,
                            listed=bool(history and vid in history['videos']),
                            coverage=bool(history and history_sufficient(candidate, baseline, history, config)),
                            as_of=stamp(state['as_of']))
@@ -108,6 +243,7 @@ def audit_run(root, require_report=True):
     check('budget', len(reservations) <= config['max_requests'] and store.reserved_cost() <= money(config['budget_usd']),
           {'requests': len(reservations), 'max_requests': config['max_requests'],
            'reserved_usd': str(store.reserved_cost()), 'limit_usd': config['budget_usd']})
+    data_passed = all(c['status']=='PASS' for c in checks)
     report_hash = None
     if require_report:
         summary = read_json(store.root / 'summary.json', {})
@@ -134,7 +270,8 @@ def audit_run(root, require_report=True):
         check('report-ready', readiness['status'] == 'complete' and summary.get('report_complete') is True
               and summary.get('report_format') == FORMAT,
               {'computed_state': readiness['status'], 'format': summary.get('report_format')})
-        raw = (store.root / 'report.html').read_bytes()
+        path = store.root / 'report.html'
+        raw = path.read_bytes() if path.is_file() else b''
         report_hash = hashlib.sha256(raw).hexdigest()
         from report import render
         # Reconstruct every visible field and prose paragraph from the saved inputs.
@@ -162,16 +299,42 @@ def audit_run(root, require_report=True):
         check('summary-counts', all(summary.get(key) == value for key, value in expected.items()), expected)
     outcomes = Counter(row['status'] for row in rows)
     failed = sum(item['status'] == 'FAIL' for item in checks)
-    return {'status': 'FAIL' if failed else 'PASS', 'passed': len(checks) - failed, 'failed': failed,
+    from completion import target_policy
+    policy = target_policy(store)
+    execution = execution_evidence(store, records, rows)
+    if not data_passed: execution['legal_stop'] = False
+    path = store.root/'report.html'
+    available = path.is_file() and b'<main' in path.read_bytes() and b'</html>' in path.read_bytes()
+    ready = bool(require_report and not failed)
+    numeric = {}
+    for vid, candidate in facts.state['candidates'].items():
+        aid=str(candidate.get('author_id'))
+        history_key=state['results'].get(vid,{}).get('history_key',aid+':normal')
+        history = (facts.state['authors'].get(history_key) or facts.state['authors'].get(aid+':normal')
+                   or facts.state['authors'].get(aid+':lite'))
+        baseline = select_baseline(candidate, history['videos'].values(), config, stamp(state['as_of'])) if history else []
+        numeric[vid] = score(candidate, baseline, facts.state['stats'], config,
+                            listed=bool(history and vid in history['videos']),
+                            coverage=bool(history and history_sufficient(candidate, baseline, history, config)),
+                            as_of=stamp(state['as_of']))['status']
+    quantity = dict(policy, qualified_count=len(eligible), verified=data_passed,
+                    met=data_passed and len(eligible)>=policy['effective_min'],
+                    default_target_met=data_passed and len(eligible)>=20)
+    completion = {'report':{'available':available,'ready':ready,'checked':require_report},
+                  'retrieval':execution, 'quantity':quantity,
+                  'cached_recovery':{'numerically_qualified_ids':sorted(vid for vid,status in numeric.items() if status=='qualified'),
+                                     'data_incomplete':any(status=='pending' for status in numeric.values())},
+                  'overall_goal_met': bool(not state.get('demo') and ready and execution['legal_stop']
+                       and execution['all_candidates_resolved'] and quantity['met'])}
+    return {'status': 'FAIL' if failed else 'PASS', 'scope':'saved_evidence_integrity',
+            'completion':completion, 'passed': len(checks) - failed, 'failed': failed,
             'checks': checks, 'run_dir': str(store.root), 'report_sha256': report_hash,
             'inputs_sha256': digest({'config': config, 'state': state, 'events': store.events}),
             'coverage': {'scope': '已保存的标准化搜索响应；不证明供应商原始卡片或全平台覆盖',
                          'candidate_count': len(rows), 'outcomes': dict(outcomes), 'items': rows,
                          'search_exhaustive': False,
-                         'query_stops': [{'keyword': key, 'pages': q.get('pages'),
-                                          'pagination_guard': q.get('warning'), 'error': q.get('error'),
-                                          'provider_end': bool(q.get('complete') and not q.get('warning'))}
-                                         for key, q in state['queries'].items()],
+                         'query_stops': execution['queries'],
                          'recorded_stops': state.get('stops', [])},
-            'not_checked': ['供应商数据真实性', '正文事实与阅读质量', '未检索范围',
+            'not_checked': ['供应商数据真实性', '相关性判断是否符合用户原意（理由和输入绑定不代表语义正确）',
+                            '正文事实与阅读质量', '未检索范围',
                             '实际页面显示与安装一致性（由交付检查器验证）']}

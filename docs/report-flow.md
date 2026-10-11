@@ -2,7 +2,7 @@
 
 ## 已确认的交付
 
-以 references/report-standard.md 为交付约束，以 references/report-example.json 为口语样稿。先完成本地实现与验收，不推送 GitHub；之后用户通过 GitHub 链接把仓库交给自己的 Agent 使用，不设计独立安装包。
+以 references/report-standard.md 为交付约束，以 references/report-example.json 为口语样稿。先完成本地实现与验收；GitHub 同步和网站发布按当前任务的明确授权分别执行，不能假设三处自动一致。用户通过 GitHub 链接把仓库交给自己的 Agent 使用，不设计独立安装包。
 
 ```mermaid
 flowchart TD
@@ -29,6 +29,8 @@ flowchart TD
 - 先复用本轮 Skill 的缓存制作真实成品，再用合成的不同主题检查结构和口吻是否固化。
 
 ## 本地验收
+
+报告可用与研究目标完成分开。沿用原独立检查器，从搜索/作者/播放缓存和请求账本复算完成依据；已有稿可读但目标未全部达成时使用 `report_ready`，缺数据时不反复调用写作。数量例外只绑定获授权的那一轮。字段定义和反例见 `completion-verification.md`。
 
 1. 标准与示例确实进入分析提示，三种现有 CLI 协议获得同一结构要求。
 2. 没有正文时完成有依据的选题解读；伪造视频开场/未知引用/修改统计被拒绝。

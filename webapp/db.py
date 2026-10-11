@@ -251,11 +251,11 @@ class Database:
                 c.execute('UPDATE jobs SET cancel_requested=1 WHERE id=?',(job_id,))
         return self.job(job_id,user_id)
 
-    def resume(self, job_id, user_id):
+    def resume(self, job_id, user_id, allow_completed_repair=False):
         with self.connection(True) as c:
             row=c.execute('SELECT * FROM jobs WHERE id=? AND user_id=?',(job_id,user_id)).fetchone()
             if not row:return None
-            if row['status'] not in ('interrupted','error','needs_analysis','cancelled'):
+            if row['status'] not in ('interrupted','error','needs_analysis','cancelled') and not (allow_completed_repair and row['status'] in ('done','report_ready')):
                 raise Conflict('这项研究当前不需要接续。')
             if c.execute("SELECT 1 FROM jobs WHERE user_id=? AND status IN ('queued','running')",(user_id,)).fetchone():
                 raise Conflict('请先等待当前研究结束。')

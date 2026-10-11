@@ -55,7 +55,7 @@ def check_delivery(source, installed, ready):
             check('live-run-directory', observed.get('output_dir') == str(root), {'run_dir': str(root)})
             audit = audit_run(root)
             check('saved-report-audit', audit['status'] == 'PASS', {'passed': audit['passed'], 'failed': audit['failed']})
-            check('live-completion', state.get('status') == 'done' and (state.get('summary') or {}).get('report_complete') is True,
+            check('live-report-ready', state.get('status') in ('done','report_ready') and (state.get('summary') or {}).get('report_complete') is True,
                   {'state': state.get('status')})
             local = (root / 'report.html').read_bytes()
             served = get('/report/report.html')
@@ -77,7 +77,8 @@ def check_delivery(source, installed, ready):
     finally:
         connection.close()
     failed = sum(row['status'] == 'FAIL' for row in checks)
-    return {'status': 'FAIL' if failed else 'PASS', 'at': now(), 'passed': len(checks) - failed,
+    return {'status': 'FAIL' if failed else 'PASS', 'scope':'installed_entry_report_delivery',
+            'completion':audit['completion'] if audit else None, 'at': now(), 'passed': len(checks) - failed,
             'failed': failed, 'checks': checks, 'run_audit': audit,
             'not_checked': ['浏览器自动跳转、手机布局和阅读体验须另跑浏览器检查',
                             '其他客户端真实账户、真实付费性能、未检索范围']}

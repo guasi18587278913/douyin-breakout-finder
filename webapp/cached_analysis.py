@@ -81,6 +81,12 @@ def rebuild(source, destination):
     """Never copy prior reviews, story, annotations, or user-added evidence."""
     fresh = Store.create(destination, copy.deepcopy(source.config), as_of=source.state['as_of'],
                          demo=bool(source.state.get('demo')))
+    if source.state.get('run_id'):fresh.state['run_id'] = source.state['run_id']
+    else:fresh.state.pop('run_id',None)
+    fresh.state['search_batches'] = copy.deepcopy(source.state.get('search_batches', []))
+    fresh.state['search_decisions'] = copy.deepcopy(source.state.get('search_decisions', []))
+    approval_path = source.root/'delivery-target-approval.json'
+    if approval_path.is_file():shutil.copy2(approval_path, fresh.root/approval_path.name)
     journal = source.root/'requests.jsonl'
     if journal.exists():shutil.copy2(journal, fresh.root/'requests.jsonl')
     fresh.events = fresh._events()
@@ -144,10 +150,15 @@ def rebuild(source, destination):
             result = score(candidate,[],fresh.state['stats'],fresh.config)
         else:
             history = None; baseline = []
+            channels={r['params'].get('channel','normal') for _,_,r in records
+                      if r['operation']=='posts' and r['params'].get('sec_user_id')==candidate.get('author_id')}
+            previous_key=source.state.get('results',{}).get(vid,{}).get('history_key','')
+            previous_channel=previous_key.rsplit(':',1)[-1]
+            channel=previous_channel if previous_channel in channels else 'normal' if 'normal' in channels else 'lite' if 'lite' in channels else 'normal'
             try:
-                if candidate.get('author_id'):history,baseline = fetch_history(fresh,client,candidate)
+                if candidate.get('author_id'):history,baseline = fetch_history(fresh,client,candidate,channel)
             except (APIError,KeyError):
-                history = fresh.state['authors'].get(str(candidate.get('author_id'))+':normal')
+                history = fresh.state['authors'].get(str(candidate.get('author_id'))+':'+channel)
             if history is not None:
                 from core import select_baseline
                 baseline = select_baseline(candidate,history['videos'].values(),fresh.config,stamp(fresh.state['as_of']))
@@ -155,7 +166,7 @@ def rebuild(source, destination):
                 listed=bool(history and vid in history['videos']),
                 coverage=bool(history and history_sufficient(candidate,baseline,history,fresh.config)),
                 as_of=stamp(fresh.state['as_of']))
-            result['history_key'] = str(candidate.get('author_id'))+':normal'
+            result['history_key'] = str(candidate.get('author_id'))+':'+channel
             result['verification_fingerprint'] = verification_fingerprint(fresh,candidate,result)
         fresh.state['results'][vid] = result
     if (source.root/'covers.json').is_file():shutil.copy2(source.root/'covers.json',fresh.root/'covers.json')
@@ -279,6 +290,15 @@ def run_cached(session, source):
                 session.timed('verify',lambda:verify(replay,CachedClient(replay)))
         session.publish_usable(replay)
         packet=packet_for(replay)
+        if not packet['numerically_qualified'] and packet['data_incomplete']:
+            # Rewriting cannot fetch missing author pages/statistics. Stop before
+            # planning or reserving another model call; preserve the prior report.
+            session.status='needs_data'
+            session.message='已有资料不足以核验出可解读案例，重复整理不能补齐数据。本轮尚未完成。'
+            session.summary=read_json(source.root/'summary.json',{})
+            session.active_store=source
+            atomic_json(replay.root/'verification.json',audit_run(replay.root,require_report=False))
+            return
         request_plan={} if expanded else model.plan('cached-report',packet,'')
         atomic_json(replay.root/'automatic-plan.json', {k:v for k,v in request_plan.items() if k!='messages'})
         session.db.progress(session.job['id'],'已恢复缓存，正在自动复核并写作',public_progress(session))
@@ -323,5 +343,5 @@ def run_cached(session, source):
         session.summary=summary;session.publish_usable(source)
         if expanded:
             previous=read_json(marker,{});previous['phase']='complete';atomic_json(marker,previous)
-        session.status='done'
-        session.message='选题报告已自动生成，本轮共 %s 篇合格作品。'%summary['qualified_count']
+        from completion import outcome
+        session.status,session.message=outcome(final['completion'],source.state.get('demo',False))

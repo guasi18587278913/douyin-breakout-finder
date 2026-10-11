@@ -48,9 +48,8 @@ def eligible_ids(store):
 
 
 def delivery_target(store):
-    value=store.config.get('delivery_target_count',20)
-    if type(value) is not int or not 1<=value<=30:raise StopRun('本轮交付数量目标无效。')
-    return value
+    from completion import target_policy
+    return target_policy(store)['effective_min']
 
 
 def schema(packet):

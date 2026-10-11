@@ -96,8 +96,13 @@ class Session:
                                     self.status, self.message = 'error', '报告未通过独立核对，已保留文件，请检查本地验收记录。'
                                     return self._snapshot()
                             self.summary=refreshed
-                            self.status='done' if readiness['status']=='complete' else 'needs_analysis'
-                            self.message='智能体已更新研究报告。' if self.status=='done' else '阶段报告已更新，仍有证据待补。'
+                            if refreshed.get('report_format') == FORMAT and readiness['status'] == 'complete':
+                                from completion import outcome
+                                self.status,self.message=outcome(checked['completion'],stored.state.get('demo',False))
+                            elif readiness['status'] == 'complete':
+                                self.status,self.message='report_ready','已有旧版报告可阅读；尚未按新版研究目标核验。'
+                            else:
+                                self.status,self.message='needs_analysis','阶段报告已更新，仍有证据待补。'
                 except (StopRun,OSError,ValueError):
                     pass
             return self._snapshot()
@@ -272,6 +277,7 @@ class Session:
                 planned = self.timed('prepare', lambda:self.assistant.ask('prepare-research',{'run_dir':str(self.run_dir),'topic':config['topic'],'scope':config['scope'],'initial_keywords':config['keywords'],'resume':resume,'budget_usd':config['budget_usd'],'max_requests':config['max_requests']},ready))
                 if not resume:
                     config['keywords'] = planned
+                    config['search_policy'] = 'bounded-rounds-v1'
                 if not resume:
                     store = Store.create(self.run_dir, config)
                 self.active_store = store
@@ -304,7 +310,7 @@ class Session:
                             self.message = '正在同时核对几位作者的作品和播放量…'
                             self.timed('verify', lambda:verify(store, client))
                         if resume or round_number == MAX_SEARCH_ROUNDS - 1:break
-                        next_words = search_extensions(store, response['next_keywords'])
+                        next_words = search_extensions(store, response['next_keywords'], record=True)
                         if not next_words:break
                         self.message = '按智能体的研究判断补充候选，仍使用本轮原有额度…'
                         self.timed('supplement', lambda:search(store,client,next_words,response['search_reason'] or '继续查找产生相关小号的关键词，按剩余额度核验。',page_limit=1))
@@ -317,6 +323,12 @@ class Session:
                         verify(store, client)
                     write_inbox(store)
                     self.summary=render(store)
+                    from selection_report import eligible_ids
+                    if not eligible_ids(store) and any(r.get('status')=='pending' for r in store.state['results'].values()):
+                        self.status='needs_data'
+                        self.message='已有资料不足以核验出可解读案例，重复整理不能补齐数据。本轮尚未完成。'
+                        self.analysis_interrupted=False
+                        return
                     self.message = '正在整理值得借鉴的做法和具体案例…'
                     self.write_report(store)
                     self.message = '正在整理原作品封面和图文报告…'
@@ -330,8 +342,13 @@ class Session:
                     raise StopRun('报告未通过独立核对，已保留数据与验收记录，不能视为完成。')
             with self.lock:
                 self.summary = summary
-                self.status = 'done' if summary.get('report_complete') else 'needs_analysis'
-                self.message = ('选题解读报告已生成。' if summary.get('report_format') == FORMAT else '研究报告已生成。') if summary.get('report_complete') else '已保存阶段报告；仍有内容证据或相关性判断待补充，尚未完成完整研究。'
+                if summary.get('report_complete') and summary.get('report_format') == FORMAT:
+                    from completion import outcome
+                    self.status, self.message = outcome(checked['completion'], store.state.get('demo',False))
+                elif summary.get('report_complete'):
+                    self.status,self.message='report_ready','已有旧版报告可阅读；尚未按新版研究目标核验。'
+                else:
+                    self.status, self.message = 'needs_analysis', '已保存阶段报告；本轮研究尚未完成。'
         except Exception as error:
             # Do not serialize exception bodies from providers or keys.
             message = str(error) if isinstance(error, StopRun) else '本轮未能完成，请保留运行目录并联系维护者。'

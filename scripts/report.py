@@ -166,7 +166,9 @@ def render(store, write=True):
     if not write:
         return content
     temp = store.root / 'report.html.tmp'
-    temp.write_text(content,encoding='utf-8')
+    # The independent gate compares exact UTF-8 bytes on every platform.
+    # Avoid implicit CRLF conversion by Windows text-mode writes.
+    temp.write_bytes(content.encode('utf-8'))
     temp.replace(store.root / 'report.html')
     # Publish readiness only after all user-facing files were successfully written.
     atomic_json(store.root / 'summary.json', summary)

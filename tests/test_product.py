@@ -89,7 +89,7 @@ class TestProduct(unittest.TestCase):
             with patch('wizard.fetch_prices',return_value=quote),patch('wizard.TikHubClient',side_effect=fake_client):
                 session.start({'description':'FDE','consent':True,'budget':'99999'})
                 session.worker.join(10)
-            self.assertEqual(session.status,'done')
+            self.assertEqual(session.status,'report_ready',session.message)
             self.assertGreater(session.summary['qualified_count'],0)
             config=read_json(session.run_dir/'config.json')
             self.assertEqual(config['budget_usd'],'0.50');self.assertEqual(config['max_requests'],50)
