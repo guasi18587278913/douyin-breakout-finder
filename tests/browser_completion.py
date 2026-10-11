@@ -88,7 +88,8 @@ def test():
                 page.screenshot(path=str(out/'missing-data-mobile.png'),full_page=True)
                 check('no browser script errors',not errors)
                 browser.close()
-            result={'passed':len(checks),'failed':0,'checks':checks,'synthetic':True,'paid_calls':0}
+            result={'source_commit':os.getenv('ACCEPTANCE_SHA') or os.getenv('GITHUB_SHA','local'),
+                    'passed':len(checks),'failed':0,'checks':checks,'synthetic':True,'paid_calls':0}
             (out/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
             print(json.dumps(result,ensure_ascii=False))
         finally:
