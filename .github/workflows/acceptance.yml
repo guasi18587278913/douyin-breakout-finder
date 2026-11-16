@@ -26,9 +26,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python: '3.9'
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python: '3.12'
           - os: windows-latest
             python: '3.12'
@@ -46,7 +46,7 @@ jobs:
       - name: Portable installer
         run: python install.py --target "${{ runner.temp }}/portable-skills/douyin-breakout-finder"
   browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,7 +81,7 @@ jobs:
           retention-days: 30
 
   website:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
