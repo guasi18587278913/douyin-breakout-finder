@@ -51,8 +51,9 @@ class Settings:
         # 只检查格式，报错时不带出密钥本身。
         if not isinstance(secret, str) or not 16 <= len(secret) <= 256 or any(ord(c) < 33 or ord(c) > 126 for c in secret):
             raise ValueError('BREAKOUT_FM_CLIENT_SECRET 格式不对：需要 16–256 个可见 ASCII 字符，不能有空格。')
-        if isinstance(self.research_credits, bool) or not isinstance(self.research_credits, int) or not 1 <= self.research_credits <= 100:
-            raise ValueError('BREAKOUT_RESEARCH_CREDITS 需要是 1–100 的整数。')
+        # 上限和封面搭子单次扣分的上限一致。
+        if isinstance(self.research_credits, bool) or not isinstance(self.research_credits, int) or not 1 <= self.research_credits <= 50:
+            raise ValueError('BREAKOUT_RESEARCH_CREDITS 需要是 1–50 的整数。')
         from cryptography.fernet import Fernet
         Fernet(self.master_key.encode())
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

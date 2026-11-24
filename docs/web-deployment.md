@@ -16,7 +16,7 @@
 
 先完成受影响检查、前端类型检查和独立审查，记录确定的 Git 提交。将该提交的 `git archive` 放入对应发布目录，使用 `sudo bash <release>/deploy/install-release.sh <release>` 安装。脚本只更改本项目文件；失败恢复旧版本、旧服务配置及旧Caddy站点，保留数据和主密钥。回滚不执行数据库逆迁移；当前仅有初始schema版本1，未来迁移另行授权。
 
-首次管理员通过 `python -m webapp.manage bootstrap` 生成48小时一次性邀请，使用服务用户及同一私密环境执行。已有管理员时拒绝再次bootstrap；旧邀请维护命令 `python -m webapp.manage invite` 暂留兼容；普通用户无需邀请码。邀请不可写进公开仓库或访问日志，页面读取后立即从地址栏移除。2026-11-24 起网页不再接受注册，这两条命令生成的邀请链接已无法使用；改用封面搭子登录后怎么指定管理员，待负责人决定。
+首次管理员通过 `python -m webapp.manage bootstrap` 生成48小时一次性邀请，使用服务用户及同一私密环境执行。已有管理员时拒绝再次bootstrap；旧邀请维护命令 `python -m webapp.manage invite` 暂留兼容；普通用户无需邀请码。邀请不可写进公开仓库或访问日志，页面读取后立即从地址栏移除。2026-11-24 起网页不再接受注册：`bootstrap`、`invite` 改为直接报错退出（提示“已改为手机号登录，用 grant-admin”），管理页的发邀请接口返回 410。管理员改用下文“封面搭子账号登录与积分”里的 `accounts`、`grant-admin`、`revoke-admin` 指定。
 
 ### 公开示例报告（/sample，2026-11-24）
 
@@ -40,24 +40,29 @@ sudo install -o breakout -g breakout -m 600 /var/lib/douyin-breakout/runs/<研�
 数据库只新增两张表，不改原有表，`schema_version` 仍为 1，不需要迁移命令：
 
 - `external_accounts(subject, user_id, created_at)`：封面搭子账号与本站用户一一对应。新用户在 `users` 里插一行，用户名为 `fm:` 加随机用户编号的前 16 位，不从 subject 推出（旧用户名不允许冒号，不会撞名），`password_hash` 是一个任何密码都比对不上的值。
-- `credit_charges(job_id, subject, reference, amount, state, attempts, next_attempt_at, settled_at, created_at, updated_at)`：每次真实研究的扣分记录，reference 就是研究编号。状态：`charging` 已发出扣分请求、`charged` 已扣并入队、`declined` 确认没扣成、`refund_pending` 待退、`refunded` 封面搭子确认这笔不再扣着。
+- `credit_charges(reference, job_id, subject, amount, state, attempts, next_attempt_at, settled_at, created_at, updated_at)`：扣分记录，以扣分编号 reference 为主键，`job_id` 建了索引。一份研究可以有多笔：开始研究那笔的 reference 就是研究编号，退过分之后再接续，用 `<研究编号>-r1`、`-r2`… 再扣。“这份研究当前那笔”取最新一笔（没扣成的不算）。状态：`charging` 已发出扣分请求、`charged` 已扣且研究已排队、`declined` 确认没扣成、`refund_pending` 待退、`refunded` 封面搭子确认这笔不再扣着、`void` 封面搭子账号已注销、这笔退不了（终态，不再重试）。
 
 积分规则：
 
-- 只有真实研究扣分，默认每次 5 分（`BREAKOUT_RESEARCH_CREDITS`）；合成示例和接续不扣分。
+- 只有真实研究扣分，默认每次 5 分（`BREAKOUT_RESEARCH_CREDITS`），合成示例不扣。目标是每份拿到手的报告正好扣一次：开始研究扣一次；没拿到报告就退；退过分的研究再接续，要重新扣一次。
 - 先做原有全部检查，包括每日额度（全站 2 次、每人 2 次）和“已有研究进行中”的预检，额度够了才扣分；扣分成功后入队，入队时在同一事务里再按原规则检查一遍，并把记录改成 `charged`。入队没成功（例如预检后额度被别的请求占了）就马上退分。
 - 积分不够时返回 402，页面说明还剩几分并给出充值链接。封面搭子连不上时返回 503，不入队；如果扣分请求已经发出、只是回应丢了，记为待退，60 秒后由后台去退。
-- 研究结束时，若按网页上的判定没有可用报告（状态不是 done/report_ready，也没有能读的报告）就退分。出错、用户停止、排队中被取消、服务重启打断（“可以接续”）都算结束；之后接续不再扣分，接续结束时如果还没有可用报告也不会重复退。
+- 研究结束时，若按网页上的判定没有可用报告（状态不是 done/report_ready，也没有能读的报告），就退当前那笔。出错、用户停止、排队中被取消、服务重启打断（“可以接续”）都算结束。
+- 接续前看当前那笔：还扣着（`charged`）就不另扣；已经退了（`refunded`，或账号注销作废的 `void`）就用新的 `<研究编号>-rN` 再扣一次，扣成了才排队，这次接续结束后还没有可用报告就退这一笔；积分不够回 402（文案和开始研究时一样），连不上封面搭子回 503；还在结算（`charging`、`refund_pending`）回 409“上一笔积分还在结算，请过一两分钟再接续”。没有扣分记录的（合成示例）照旧。研究页的接续按钮旁会写明这次接续用几分。
+- 后台结算和用户点接续同时发生时：把 `charged` 改成待退的那条 SQL 自带“这份研究不在排队或运行中”的条件，接续先提交就不退，这笔留给接续那次；接续不另扣时，排队的同一个事务里会再确认当前那笔还扣着，结算先提交就拒绝这次接续，用户再点会重新扣。
+- 封面搭子回 409 `reference_closed`（这个编号已经退过或关闭）时按没扣成处理；退分时回 404 `unknown_subject`（用户在封面搭子注销了账号），这笔记为 `void`，记一条日志，不再重试；退一个没扣过的编号回 200 `refunded:false`，按已结束处理。
 - 退款失败的记录保持 `refund_pending`，后台任务空闲时按 30 秒起、逐次翻倍、最长 1 小时的间隔重试，不会丢；封面搭子一次没退成就先停这一轮，不连续等超时、不拖住排队的研究。扣分请求发出后进程中断、超过 2 分钟仍停在 `charging` 的记录，也由后台按待退处理（对没扣成的记录，封面搭子会答“没有可退的”）。
 - 首页接口 `/api/bootstrap` 返回当前积分（按用户缓存 30 秒，查询超时 3 秒）；查不到时为 null，页面照常显示。
 
-停用旧账号：原有 3 个用户名密码账号不能再登录，`/api/register`、`/api/login` 返回 410“已改为手机号登录”；会话只认绑定了封面搭子账号的用户，旧账号即使还有未过期的会话也立即失效。旧账号和 7 份旧研究的数据都留在库里，不删除，但网页上已没有入口能看到。以前的管理员只能经邀请注册，也是用户名密码账号，同样停用；封面搭子登录只建普通成员，所以网页管理页暂时没人能进（TikHub、DeepSeek 的服务配置仍在，研究照常进行）。
+停用旧账号：原有 3 个用户名密码账号不能再登录，`/api/register`、`/api/login` 返回 410“已改为手机号登录”；会话只认绑定了封面搭子账号的用户，旧账号即使还有未过期的会话也立即失效。旧账号和 7 份旧研究的数据都留在库里，不删除，但网页上已没有入口能看到。以前的管理员只能经邀请注册，也是用户名密码账号，同样停用；封面搭子登录只建普通成员。上线后请负责人先用手机号登录一次，再在服务器上用 `grant-admin` 恢复管理员（见下文）；在那之前网页管理页没人能进，但 TikHub、DeepSeek 的服务配置仍在，研究照常进行。
 
 新增环境变量（写在 `/etc/douyin-breakout.env`）：
 
 - `BREAKOUT_FM_CLIENT_SECRET`：必填，封面搭子给小号爆款的接入密钥，16–256 个可见 ASCII 字符。正式环境没配置时服务启动即报错；开发模式（`BREAKOUT_DEV_MODE=1`）没配置时自动用假值，只能连本机假服务。
 - `BREAKOUT_FM_BASE`：选填，默认 `https://fm.zmtgzt.com`，只能写网站根地址；正式环境必须是 HTTPS。
-- `BREAKOUT_RESEARCH_CREDITS`：选填，默认 5，一次真实研究扣多少积分，允许 1–100。
+- `BREAKOUT_RESEARCH_CREDITS`：选填，默认 5，一次真实研究扣多少积分，允许 1–50（和封面搭子单次扣分上限一致）。
+
+充值链接：页面上的“充值”默认指向 `BREAKOUT_FM_BASE` 的 `/#/me`；积分不够时封面搭子返回的 `recharge_url` 只有和 `BREAKOUT_FM_BASE` 同源（正式环境即同一个 https 地址）才用，否则仍用默认的 `/#/me`。
 
 上线步骤：
 
@@ -65,13 +70,21 @@ sudo install -o breakout -g breakout -m 600 /var/lib/douyin-breakout/runs/<研�
 2. 先在服务器配置密钥，再发布代码：用 `sudoedit /etc/douyin-breakout.env` 加一行 `BREAKOUT_FM_CLIENT_SECRET=…`，保持文件 root 所有、权限 600。当前线上版本不读这个变量，先加不影响服务。
 3. 按上面的“发布”流程安装新版本。新版本启动时缺这项配置会直接报错，`install-release.sh` 的健康检查失败后会自动恢复旧版本。全新安装时脚本生成的环境文件里没有这一项，需要先补上再启动。
 4. 上线后验证：未登录首页只剩“用手机号登录 / 注册”按钮和示例报告入口；点登录跳到封面搭子，确认后回到首页，顶栏显示“积分 N · 充值”；`/api/register`、`/api/login` 返回 410。真实研究扣分会产生 TikHub、DeepSeek 费用，须按明确授权的次数验收。
+5. 恢复管理员：请负责人先用手机号登录一次，再在服务器上执行 `accounts` 找到他的用户编号，用 `grant-admin <用户编号>` 设为管理员。
+
+管理员维护命令（`python -m webapp.manage …`）。和服务进程一样，要用服务用户 `breakout`、带上 `/etc/douyin-breakout.env` 里的环境变量、在 `/opt/douyin-breakout/current` 下执行；例如 `sudo systemd-run --pipe --wait --quiet -p User=breakout -p EnvironmentFile=/etc/douyin-breakout.env -p WorkingDirectory=/opt/douyin-breakout/current /opt/douyin-breakout/current/.venv/bin/python -m webapp.manage accounts`（这条命令写法尚未在服务器上实测）。
+
+- `accounts`：列出封面搭子账号对应的本站用户：用户编号、建号时间、最近登录时间（2026-11-24 新版开始记录，按服务器本地时区显示）、角色、研究数。不打印 subject，旧的用户名密码账号不在列表里。
+- `grant-admin <用户编号>`：设为管理员。只允许绑定了封面搭子的账号，写审计记录 `grant_admin`。
+- `revoke-admin <用户编号>`：撤销管理员，写审计记录 `revoke_admin`。
+- 角色改动立即生效，不用对方重新登录。
 
 回退：按原流程重新安装上一个发布目录即可。新增的两张表留在库里，旧代码不读，不需要逆迁移。回退后旧的用户名密码账号恢复可登录（它们没过期的旧会话也会重新生效）。封面搭子登录建立的账号没有密码，不能重新登录；但旧代码查会话时不看 `external_accounts`，他们已有的会话仍然有效，在旧代码下跑真实研究不扣分（仍受每日次数限制）。所以回退时要同时做两件事：
 
 1. 用服务用户清掉封面搭子用户的会话：`DELETE FROM sessions WHERE user_id IN (SELECT user_id FROM external_accounts);`（只删会话，不动账号和研究；这是生产数据写入，按授权执行）。
 2. 回退前先查积分记录：`credit_charges` 里 `state` 为 `charging`、`refund_pending` 的，以及 `state='charged'` 但对应研究还没结束或结束后还没核对（`settled_at` 为空或早于研究的 `finished_at`）的。旧代码不会去结算这些分：要么尽快重新上新版由后台继续处理，要么记下研究编号请封面搭子人工退回。
 
-`deploy/import-approved-providers.py` 只从环境文件里挑原来的 5 个变量，新版上线后它读配置时会因为缺 `BREAKOUT_FM_CLIENT_SECRET` 报错退出（报错前不写任何东西）。网页管理页暂时没人能进，以后要换 TikHub、DeepSeek 密钥，需要先改这个工具的允许列表或另定管理员，属于部署工具改动，须另行授权。
+`deploy/import-approved-providers.py` 只从环境文件里挑原来的 5 个变量，即使 `/etc/douyin-breakout.env` 里已经有 `BREAKOUT_FM_CLIENT_SECRET`，新版上线后它读配置时也会报“未配置”退出（2026-11-24 本地按它的读取流程核对过；报错前不写任何东西）。以后换 TikHub、DeepSeek 密钥，请先用 `grant-admin` 恢复管理员，在网页管理页里换；要继续用这个工具，需要把这个变量加进它的允许列表，属于部署工具改动，须另行授权。
 
 ## 任务与费用
 

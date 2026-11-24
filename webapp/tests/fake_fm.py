@@ -3,6 +3,7 @@
 网站单元测试用 transport() 当 httpx 的假网络；浏览器测试用 serve() 在本机起一个 HTTP 服务。
 """
 import json
+import re
 import secrets
 import threading
 import time
@@ -21,6 +22,7 @@ class FakeFm:
         self.balances = {}      # subject -> 积分
         self.codes = {}         # 授权码 -> 授权信息
         self.ledger = {}        # reference -> 扣分记录
+        self.closed = set()     # 退过（或退一个没扣过的）编号会被关掉，之后不能再扣
         self.calls = []         # 封面搭子收到的 (接口, 请求内容)，按顺序记下
         self.sent = []          # 网站发出的请求（含连不上的），只记接口名
         self.unreachable = set()  # 这些接口连不上（请求没送到）
@@ -61,8 +63,10 @@ class FakeFm:
                 return 200, {'balance': self.balances[subject]}
             if operation == 'charge':
                 reference, amount = payload.get('reference'), payload.get('amount')
-                assert isinstance(amount, int) and amount > 0 and 1 <= len(reference) <= 80
+                assert isinstance(amount, int) and amount > 0 and re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', reference)
                 assert len(payload.get('note', '')) <= 60
+                if reference in self.closed:
+                    return 409, {'error': 'reference_closed'}
                 if reference in self.ledger:  # 同一 reference 重复调用不重复扣
                     return 200, {'charged': True, 'balance': self.balances[subject]}
                 if self.balances[subject] < amount:
@@ -72,6 +76,7 @@ class FakeFm:
                 return 200, {'charged': True, 'balance': self.balances[subject]}
             if operation == 'refund':
                 entry = self.ledger.get(payload.get('reference'))
+                self.closed.add(payload.get('reference'))
                 if not entry or entry['refunded'] or entry['subject'] != subject:  # 同一 reference 最多退一次
                     return 200, {'refunded': False, 'balance': self.balances[subject]}
                 entry['refunded'] = True

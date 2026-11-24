@@ -59,7 +59,6 @@ class FmClient:
         self.base = settings.fm_base
         self.secret = settings.fm_client_secret
         self.redirect_uri = settings.public_url + '/auth/callback'
-        self.schemes = ('https', 'http') if settings.dev else ('https',)
         self.transport = transport
 
     def authorize_url(self, state):
@@ -67,16 +66,15 @@ class FmClient:
             {'client_id': CLIENT_ID, 'redirect_uri': self.redirect_uri, 'state': state})
 
     def link(self, value):
-        """只接受 http(s) 的普通网址，防止把 javascript: 之类的地址放进页面。"""
+        """充值链接只接受和 BREAKOUT_FM_BASE 同源的地址（正式环境即 https），其余一律不用，由调用方换成默认的 /#/me。"""
         if not isinstance(value, str) or not 0 < len(value) <= 500 or any(ord(c) < 33 or ord(c) > 126 for c in value):
             return None
         try:
-            parts = urlsplit(value)
+            parts, base = urlsplit(value), urlsplit(self.base)
+            same = (parts.scheme, parts.hostname, parts.port) == (base.scheme, base.hostname, base.port)
         except ValueError:
             return None
-        if parts.scheme not in self.schemes or not parts.hostname or parts.username or parts.password:
-            return None
-        return value
+        return value if same and not parts.username and not parts.password else None
 
     def call(self, operation, payload, timeout=TIMEOUT):
         try:
@@ -165,37 +163,53 @@ class Credits:
         return value
 
     def charge(self, subject, job_id):
-        """真实研究入队前扣分，扣成功才返回新余额；其他情况抛错，由调用方给人话提示。"""
+        """真实研究入队前扣分（编号就是研究编号），扣成功才返回新余额；其他情况抛错，由调用方给人话提示。"""
         self.db.begin_charge(job_id, subject, self.cost)
+        return self.collect(subject, job_id)
+
+    def recharge(self, subject, job_id):
+        """退过分的研究再接续前重新扣一次，返回这次的编号 <研究编号>-rN。当前那笔还没退完时抛 Conflict。"""
+        reference = self.db.begin_resume_charge(job_id, subject, self.cost)
+        self.collect(subject, reference)
+        return reference
+
+    def collect(self, subject, reference):
+        """向封面搭子扣已记成“扣分中”的这一笔，并按结果更新记录。"""
         try:
-            balance = self.client.charge(subject, self.cost, job_id)
+            balance = self.client.charge(subject, self.cost, reference)
         except InsufficientCredits as error:
-            self.db.decline_charge(job_id)
+            self.db.decline_charge(reference)
             if error.balance is not None:
                 self.remember(subject, error.balance)
             raise
         except FmRejected:
-            self.db.decline_charge(job_id)
+            # 包括 409 reference_closed（这个编号已经退过或关闭了）：按没扣成处理。
+            self.db.decline_charge(reference)
             raise
         except FmUnavailable as error:
             if error.sent:
-                # 请求可能已经扣成、只是回应丢了：记为待退，稍后去退（对没扣成的记录，退款不会多给）。
-                self.db.queue_refund(job_id, ('charging',), delay=UNSURE_DELAY)
+                # 请求可能已经扣成、只是回应丢了：记为待退，稍后去退（对没扣成的编号，退款不会多给）。
+                self.db.queue_refund(reference, ('charging',), delay=UNSURE_DELAY)
             else:
-                self.db.decline_charge(job_id)
+                self.db.decline_charge(reference)
             raise
         self.remember(subject, balance)
         return balance
 
-    def refund_now(self, job_id, states):
-        """把处在 states 里的记录改成待退并马上试一次。返回 True 已确认退回，False 这次没退成（留给后台重试），
-        None 没有要退的或别处正在退。"""
-        if not self.db.queue_refund(job_id, states):
+    def resume_cost(self, job_id):
+        """接续这份研究要用几分：当前那笔还扣着（或根本没扣过分，比如合成示例）就是 0，否则要重新扣一次。"""
+        current = self.db.credit_charge(job_id)
+        return 0 if current is None or current['state'] == 'charged' else self.cost
+
+    def refund_now(self, reference, states):
+        """把处在 states 里的那笔改成待退并马上试一次。返回 True 已确认退回，False 这次没退成（留给后台重试），
+        None 没有要退的、别处正在退，或封面搭子账号已注销退不了。"""
+        if not self.db.queue_refund(reference, states):
             return None
-        return self.attempt(job_id)
+        return self.attempt(reference)
 
     def settle(self, job_id):
-        """研究结束（含排队时被取消、被重启打断）后调用：已扣分却没有可用报告，就退回。返回值同 refund_now。"""
+        """研究结束（含排队时被取消、被重启打断）后调用：当前那笔还扣着、却没有可用报告，就退回。返回值同 refund_now。"""
         job = self.db.job(job_id)
         if not job or job['status'] in ('queued', 'running') or job['finished_at'] is None:
             return None
@@ -205,25 +219,37 @@ class Credits:
         try:
             delivered = self.delivered(job)
         except Exception:
-            self.db.defer_charge(job_id, SETTLE_RETRY)
+            self.db.defer_charge(row['reference'], SETTLE_RETRY)
             raise
         if delivered:
-            self.db.mark_settled(job_id)
+            self.db.mark_settled(row['reference'])
             return None
-        return self.refund_now(job_id, ('charged',))
+        # 改待退时同一条 SQL 再确认研究没被接续；用户刚点了接续的话，这笔继续留给接续那次用。
+        if not self.db.queue_settle_refund(row['reference']):
+            return None
+        return self.attempt(row['reference'])
 
-    def attempt(self, job_id):
-        """去退一笔到期的待退记录：True 已确认退回，False 封面搭子没退成，None 不到期或别处正在退。"""
-        row = self.db.claim_refund(job_id, REFUND_LEASE)
+    def attempt(self, reference):
+        """去退一笔到期的待退记录：True 已确认退回，False 封面搭子没退成，None 不到期、别处正在退或账号已注销。"""
+        row = self.db.claim_refund(reference, REFUND_LEASE)
         if not row:
             return None
         try:
-            _, balance = self.client.refund(row['subject'], row['reference'])
-        except (FmUnavailable, FmRejected):
-            self.db.defer_charge(job_id, backoff(row['attempts']))
-            log.warning('积分退回暂未成功，稍后重试：%s', job_id)
+            _, balance = self.client.refund(row['subject'], reference)
+        except FmRejected as error:
+            if error.status == 404 and error.code == 'unknown_subject':
+                # 用户在封面搭子注销了账号：这笔退不了，记为终态，不再重试。
+                self.db.void_charge(reference)
+                log.warning('封面搭子账号已注销，这笔积分退不了，已停止重试：%s', reference)
+                return None
+            self.db.defer_charge(reference, backoff(row['attempts']))
+            log.warning('积分退回暂未成功，稍后重试：%s', reference)
             return False
-        self.db.finish_refund(job_id)
+        except FmUnavailable:
+            self.db.defer_charge(reference, backoff(row['attempts']))
+            log.warning('积分退回暂未成功，稍后重试：%s', reference)
+            return False
+        self.db.finish_refund(reference)
         self.remember(row['subject'], balance)
         return True
 
@@ -236,6 +262,6 @@ class Credits:
                     return
             except Exception:
                 log.error('研究结束后的积分核对出错，稍后重试：%s', job_id)
-        for job_id in self.db.due_refunds():
-            if self.attempt(job_id) is False:
+        for reference in self.db.due_refunds():
+            if self.attempt(reference) is False:
                 return

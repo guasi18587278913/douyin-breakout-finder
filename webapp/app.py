@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from webapp.settings import Settings
-from webapp.db import Database, Conflict, InvalidInput
+from webapp.db import Database, Conflict, InvalidInput, SETTLING
 from webapp.vault import Secrets
 from webapp.engine import Worker, ROOT, run_dir
 from webapp.credits import Credits, FmClient, FmRejected, FmUnavailable, InsufficientCredits, CODE, STATE
@@ -32,8 +32,6 @@ class Research(Body):
     topic:str=Field(min_length=1,max_length=500)
     focus:str='all'
     mode:str='live'
-class Invite(Body):
-    label:str=Field(default='受邀请的创作者',max_length=80)
 class Configure(Body):
     tikhub_key:str=Field(default='',max_length=500)
     deepseek_key:str=Field(default='',max_length=500)
@@ -89,6 +87,7 @@ def create_app(settings=None,fm_transport=None):
         blocked = cannot_recover_data(result)
         if blocked and status in ('error','interrupted','needs_analysis','needs_data'):
             status,message='needs_data','已有资料不足以核验出可解读案例，重复整理不能补齐数据。本轮尚未完成。'
+        can_resume=not blocked and job['mode']=='live' and status in ('interrupted','error','needs_analysis','cancelled') and (folder/'state.json').is_file()
         return {**{k:job[k] for k in ('id','topic','focus','mode','created_at','updated_at','cancel_requested')},
                 'status':status,'message':message,
                 'completion':{**{k:result[k] for k in ('report','quantity')},
@@ -96,11 +95,19 @@ def create_app(settings=None,fm_transport=None):
                 'report_ready':bool(result and result['report']['ready']),
                 'progress':json.loads(job['progress_json']),
                 'report_url':'/reports/'+job['id']+'/report.html' if (folder/'report.html').is_file() else None,
-                'can_resume':not blocked and job['mode']=='live' and status in ('interrupted','error','needs_analysis','cancelled') and (folder/'state.json').is_file()}
+                'can_resume':can_resume,
+                # 接续要用几分：当前那笔还扣着就是 0；退过分了要重新扣
+                'resume_credits':credits.resume_cost(job['id']) if can_resume else 0}
     def delivered(job):
         """研究是否已有可用报告：网页显示为 done/report_ready，或已有能读的报告。都不是就该退分。"""
         view=public_job(job)
         return view['status'] in ('done','report_ready') or view['report_ready']
+    def shortage(error):
+        """积分不够时的 402：开始研究和接续用同一套文案。"""
+        balance='' if error.balance is None else f'，你现在有 {error.balance} 分'
+        return JSONResponse({'detail':f'积分不够：跑一次真实研究要 {settings.research_credits} 积分{balance}。请先去封面搭子充值。',
+                             'balance':error.balance,'cost':settings.research_credits,'recharge_url':error.recharge_url or credits.recharge_url},402)
+    def fm_down(what):return f'暂时连不上封面搭子的积分服务，{what}没有开始；万一已经扣了分，会自动退回。请稍后再试。'
     def limit(request,bucket,count,seconds):
         address=request.client.host if request.client else 'unknown'
         if not db.allow(bucket+':'+hashlib.sha256(address.encode()).hexdigest(),count,seconds):
@@ -237,13 +244,9 @@ def create_app(settings=None,fm_transport=None):
         db.admit(user['user_id'],'live')
         job_id=uuid.uuid4().hex
         try:credits.charge(user['subject'],job_id)
-        except InsufficientCredits as error:
-            balance='' if error.balance is None else f'，你现在有 {error.balance} 分'
-            return JSONResponse({'detail':f'积分不够：跑一次真实研究要 {settings.research_credits} 积分{balance}。请先去封面搭子充值。',
-                                 'balance':error.balance,'cost':settings.research_credits,'recharge_url':error.recharge_url or credits.recharge_url},402)
-        except (FmUnavailable,FmRejected):
-            raise HTTPException(503,'暂时连不上封面搭子的积分服务，研究没有开始；万一已经扣了分，会自动退回。请稍后再试。') from None
-        try:job=db.enqueue(user['user_id'],body.topic.strip(),body.focus,'live',job_id=job_id,charged=True)
+        except InsufficientCredits as error:return shortage(error)
+        except (FmUnavailable,FmRejected):raise HTTPException(503,fm_down('研究')) from None
+        try:job=db.enqueue(user['user_id'],body.topic.strip(),body.focus,'live',job_id=job_id,charged=job_id)
         except Exception as error:
             # 没入队（例如预检之后额度被别的请求占了）就马上退分；退不成的记为待退，由后台重试。
             try:refunded=credits.refund_now(job_id,('charging',))
@@ -265,9 +268,29 @@ def create_app(settings=None,fm_transport=None):
         return public_job(db.job(job_id,job['user_id']))
     @app.post('/api/jobs/{job_id}/resume',status_code=202)
     def resume(request:Request,job_id:str):
-        job=own(request,job_id);limit(request,'resume',8,3600)
+        user=auth(request);job=own(request,job_id);limit(request,'resume',8,3600)
         if not public_job(job)['can_resume']:raise HTTPException(409,'当前没有可接续的研究数据。')
-        return public_job(db.resume(job_id,job['user_id'],allow_completed_repair=job['status'] in ('done','report_ready')))
+        repair=job['status'] in ('done','report_ready')
+        current=db.credit_charge(job_id)
+        # 没扣过分（合成示例等）或这份研究还扣着分：不另扣。接续事务里会再确认这笔还扣着。
+        if current is None or current['state']=='charged':
+            return public_job(db.resume(job_id,job['user_id'],allow_completed_repair=repair))
+        if current['state'] in ('charging','refund_pending'):raise HTTPException(409,SETTLING)
+        # 已经退过分（或封面搭子账号注销后作废）：这次接续重新扣一次，扣成了才排队。
+        db.admit(job['user_id'],'resume')  # 只查有没有别的研究进行中；接续不占每日额度
+        try:reference=credits.recharge(user['subject'],job_id)
+        except InsufficientCredits as error:return shortage(error)
+        except (FmUnavailable,FmRejected):raise HTTPException(503,fm_down('接续')) from None
+        try:resumed=db.resume(job_id,job['user_id'],allow_completed_repair=repair,charged=reference)
+        except Exception as error:
+            try:refunded=credits.refund_now(reference,('charging',))
+            except Exception:
+                refunded=False
+                logging.getLogger(__name__).error('接续没排上后的积分退回暂未完成，后台循环会再试。')
+            if isinstance(error,Conflict):
+                raise Conflict(str(error)+('刚才扣的积分已经退回。' if refunded else '刚才扣的积分会自动退回。')) from None
+            raise
+        return public_job(resumed)
     @app.get('/reports/{job_id}/{filename:path}')
     def report(request:Request,job_id:str,filename:str):
         own(request,job_id)
@@ -306,9 +329,9 @@ def create_app(settings=None,fm_transport=None):
         with db.connection(True) as c:c.execute('INSERT INTO audit(at,user_id,action) VALUES (?,?,?)',(time.time(),user['user_id'],'configure_providers'))
         return {'providers':status}
     @app.post('/api/admin/invites')
-    def invite(request:Request,body:Invite):
-        auth(request,True);limit(request,'invite',20,3600)
-        token=db.invite(body.label)
-        return {'url':settings.public_url+'/#invite='+token,'expires_hours':48}
+    def invite(request:Request):
+        # 邀请注册已停用：管理员改在服务器上用 python -m webapp.manage grant-admin 指定。
+        auth(request,True)
+        raise HTTPException(410,'已改为手机号登录，邀请链接已停用；请在服务器上用 grant-admin 设管理员。')
     app.mount('/static',StaticFiles(directory=ROOT/'webapp/static'),name='static')
     return app

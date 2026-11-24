@@ -1,6 +1,9 @@
+import contextlib
 import hashlib
+import io
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 import threading
@@ -154,6 +157,9 @@ class WebTests(unittest.TestCase):
         self.assertEqual(client.post('/api/admin/providers',json={'tikhub_key':'not-a-real-key'}).status_code,403)
         admin,owner=self.client_for('setup-owner','admin')
         self.assertEqual(owner['role'],'admin');self.assertEqual(admin.get('/api/admin').status_code,200)
+        r=admin.post('/api/admin/invites',json={'label':'旧入口'})
+        self.assertEqual(r.status_code,410);self.assertIn('grant-admin',r.json()['detail'])
+        with self.db.connection() as c:self.assertEqual(c.execute('SELECT count(*) FROM invites').fetchone()[0],0)
     def test_legacy_password_accounts_are_disabled_but_kept(self):
         legacy=self.db.register_public('legacy-owner',PASSWORD);token,_=self.db.create_session(legacy['id'])
         job=self.db.enqueue(legacy['id'],'旧研究','all','demo')
@@ -261,9 +267,12 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.db.jobs(a['id']),[]);self.assertEqual([c['state'] for c in self.charges()],['declined'])
         self.assertEqual(self.fm.balances[subject_for('alice')],3)
         # 封面搭子给的充值链接只接受普通网址，不能把 javascript: 之类的地址放进页面。
-        self.fm.recharge_url='javascript:alert(1)'
-        with self.live_ready():r=alice.post('/api/jobs',json={'topic':'AI自媒体','mode':'live'})
-        self.assertEqual((r.status_code,r.json()['recharge_url']),(402,'https://fm.zmtgzt.com/#/me'))
+        # 只认和 BREAKOUT_FM_BASE 同源的地址，其余换成默认的 /#/me。
+        for given,shown in (('javascript:alert(1)','https://fm.zmtgzt.com/#/me'),('https://pay.example.com/fm','https://fm.zmtgzt.com/#/me'),
+                            ('http://fm.zmtgzt.com/#/me','https://fm.zmtgzt.com/#/me'),('https://fm.zmtgzt.com/#/me?from=breakout','https://fm.zmtgzt.com/#/me?from=breakout')):
+            self.fm.recharge_url=given
+            with self.live_ready():r=alice.post('/api/jobs',json={'topic':'AI自媒体','mode':'live'})
+            self.assertEqual((r.status_code,r.json()['recharge_url']),(402,shown))
     def test_demo_research_never_charges(self):
         alice,a=self.client_for('alice')
         self.assertEqual(alice.post('/api/jobs',json={'topic':'FDE','mode':'demo'}).status_code,202)
@@ -348,14 +357,14 @@ class WebTests(unittest.TestCase):
         client,user,job=self.live_job()
         self.assertEqual(client.post('/api/jobs/'+job['id']+'/cancel',json={}).json()['status'],'cancelled')
         self.assertEqual(self.db.credit_charge(job['id'])['state'],'refunded');self.assertEqual(self.fm.balances[subject_for('alice')],10)
-    def test_interrupted_research_is_settled_and_resume_never_charges(self):
+    def test_interrupted_research_is_settled_and_resume_while_charged_is_free(self):
         client,user,job=self.live_job()
         # 服务重启打断了正在跑的研究，而且还没存下研究数据：网页上接续不了，积分不能就此卡住。
         self.db.claim();self.db.recover_interrupted()
         self.assertFalse(client.get('/api/jobs/'+job['id']).json()['can_resume'])
         self.credits.retry_due()
         self.assertEqual(self.db.credit_charge(job['id'])['state'],'refunded');self.assertEqual(self.fm.balances[subject_for('alice')],10)
-        # 有研究数据、能接续的：接续不扣分
+        # 有研究数据、在后台结算前就接续的：这笔还扣着，接续不另扣
         _,_,other=self.live_job('bob')
         self.db.claim();self.db.recover_interrupted()
         folder=run_dir(self.settings,other['id']);folder.mkdir(parents=True);(folder/'state.json').write_text('{}')
@@ -364,6 +373,131 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.fm.count('charge'),2);self.assertEqual(self.db.job(other['id'])['status'],'queued')
         self.credits.retry_due()  # 接续排着队时不结算
         self.assertEqual(self.db.credit_charge(other['id'])['state'],'charged');self.assertEqual(self.fm.balances[subject_for('bob')],5)
+    def finished_without_report(self,job,status='error'):
+        """研究跑完了但没有可用报告，留下研究数据（state.json），网页上可以接续。"""
+        self.db.claim();self.db.finish(job['id'],status,'本轮研究暂时中断。',{})
+        folder=run_dir(self.settings,job['id']);folder.mkdir(parents=True,exist_ok=True);(folder/'state.json').write_text('{}')
+    def test_stopped_then_resumed_research_pays_exactly_once_per_report(self):
+        client,user,job=self.live_job();subject=subject_for('alice');resume='/api/jobs/'+job['id']+'/resume'
+        # 取完数据后用户自己停止：没有报告，退分
+        self.finished_without_report(job,'cancelled');self.credits.settle(job['id'])
+        self.assertEqual(self.fm.balances[subject],10)
+        view=client.get('/api/jobs/'+job['id']).json();self.assertEqual((view['can_resume'],view['resume_credits']),(True,5))
+        # 再接续要重新扣一次，扣成了才排队
+        r=client.post(resume,json={});self.assertEqual(r.status_code,202,r.text)
+        self.assertEqual(self.db.job(job['id'])['status'],'queued');self.assertEqual(self.fm.balances[subject],5)
+        self.assertEqual([(c['reference'],c['state']) for c in self.db.credit_charges(job['id'])],[(job['id'],'refunded'),(job['id']+'-r1','charged')])
+        self.assertEqual(self.fm.calls[-1][1]['reference'],job['id']+'-r1')
+        # 这次接续结束后还没有可用报告：退这一笔
+        self.app.state.worker.execute(self.db.claim())
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'refunded');self.assertEqual(self.fm.balances[subject],10)
+        # 再接续，这次拿到报告：这笔留着，一份报告正好 5 分
+        r=client.post(resume,json={});self.assertEqual(r.status_code,202,r.text);self.assertEqual(self.fm.balances[subject],5)
+        from demo import run_demo
+        self.db.claim();shutil.rmtree(run_dir(self.settings,job['id']));run_demo(run_dir(self.settings,job['id']),selection=True)
+        self.db.finish(job['id'],'done','研究已完成',{});self.credits.settle(job['id']);self.credits.retry_due()
+        self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','refunded','charged'])
+        self.assertEqual(self.fm.balances[subject],5);self.assertTrue(client.get('/api/jobs/'+job['id']).json()['report_ready'])
+    def test_resume_recharge_failures_do_not_queue(self):
+        client,user,job=self.live_job();subject=subject_for('alice');resume='/api/jobs/'+job['id']+'/resume'
+        self.finished_without_report(job);self.credits.settle(job['id'])
+        self.fm.balances[subject]=3
+        r=client.post(resume,json={});self.assertEqual(r.status_code,402)
+        self.assertEqual(r.json()['detail'],'积分不够：跑一次真实研究要 5 积分，你现在有 3 分。请先去封面搭子充值。')
+        self.fm.balances[subject]=10;self.fm.unreachable.add('charge')
+        r=client.post(resume,json={});self.assertEqual(r.status_code,503);self.assertIn('接续没有开始',r.json()['detail'])
+        self.assertEqual(self.db.job(job['id'])['status'],'error')
+        self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','declined','declined'])
+        self.fm.unreachable.clear()
+        self.assertEqual(client.post(resume,json={}).status_code,202)
+        self.assertEqual((self.db.credit_charge(job['id'])['reference'],self.fm.balances[subject]),(job['id']+'-r3',5))
+    def test_two_resume_clicks_charge_only_once(self):
+        # 同时点两次接续：第一次正在向封面搭子扣 -r1 时，第二次要记新的一笔会被拒绝，不会扣出两笔。
+        client,user,job=self.live_job();self.finished_without_report(job);self.credits.settle(job['id'])
+        outcomes=[]
+        def second_click(payload):
+            if payload['reference']!=job['id']+'-r1':return
+            try:self.db.begin_resume_charge(job['id'],subject_for('alice'),5);outcomes.append('charged')
+            except Conflict as error:outcomes.append(str(error))
+        self.fm.before['charge']=second_click
+        self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={}).status_code,202)
+        self.assertEqual(outcomes,['上一笔积分还在结算，请过一两分钟再接续。'])
+        self.assertEqual([(c['reference'],c['state']) for c in self.db.credit_charges(job['id'])],[(job['id'],'refunded'),(job['id']+'-r1','charged')])
+        self.assertEqual(self.fm.balances[subject_for('alice')],5)
+        self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={}).status_code,409)
+    def test_resume_waits_while_previous_charge_is_settling(self):
+        client,user,job=self.live_job();resume='/api/jobs/'+job['id']+'/resume'
+        self.fm.unreachable.add('refund');self.finished_without_report(job);self.credits.settle(job['id'])
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'refund_pending')
+        r=client.post(resume,json={});self.assertEqual(r.status_code,409);self.assertIn('上一笔积分还在结算',r.json()['detail'])
+        self.assertEqual(self.db.job(job['id'])['status'],'error');self.assertEqual(self.fm.count('charge'),1)
+        self.fm.unreachable.clear()
+        with self.db.connection(True) as c:c.execute('UPDATE credit_charges SET next_attempt_at=0')
+        self.credits.retry_due();self.assertEqual(client.post(resume,json={}).status_code,202)
+        self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','charged'])
+    def test_resume_before_settlement_keeps_the_charge_for_the_resumed_run(self):
+        # 并发顺序一：用户先点了接续，后台才结算。研究已在排队，这笔不退，留给接续那次用。
+        client,user,job=self.live_job();self.finished_without_report(job)
+        self.assertEqual(client.get('/api/jobs/'+job['id']).json()['resume_credits'],0)
+        self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={}).status_code,202)
+        self.credits.retry_due()
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'charged');self.assertEqual(self.fm.sent.count('refund'),0)
+        # 更窄的交错：后台已判定“没有报告”，正要改成待退时，用户的接续先提交了。改待退那条 SQL 自己会让开。
+        _,_,other=self.live_job('bob');self.finished_without_report(other);bob=self.client_for('bob')[0]
+        def resume_first(job_row):
+            self.assertEqual(bob.post('/api/jobs/'+other['id']+'/resume',json={}).status_code,202);return False
+        with patch.object(self.credits,'delivered',resume_first):self.credits.settle(other['id'])
+        self.assertEqual(self.db.credit_charge(other['id'])['state'],'charged');self.assertEqual(self.fm.sent.count('refund'),0)
+        self.assertEqual(self.fm.count('charge'),2)
+    def test_settlement_before_resume_makes_the_resume_pay_again(self):
+        # 并发顺序二：接续请求读到“还扣着”之后、真正排队之前，后台把这笔退了。排队那一步会发现并拒绝，用户再点会重新扣。
+        client,user,job=self.live_job();self.finished_without_report(job);resume='/api/jobs/'+job['id']+'/resume'
+        original=self.db.resume
+        def settle_in_between(*args,**kwargs):
+            self.credits.settle(job['id']);return original(*args,**kwargs)
+        with patch.object(self.db,'resume',settle_in_between):r=client.post(resume,json={})
+        self.assertEqual(r.status_code,409);self.assertIn('上一笔积分还在结算',r.json()['detail'])
+        self.assertEqual((self.db.job(job['id'])['status'],self.db.credit_charge(job['id'])['state']),('error','refunded'))
+        self.assertEqual(client.post(resume,json={}).status_code,202)
+        self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','charged'])
+        self.assertEqual(self.fm.balances[subject_for('alice')],5)
+    def test_refund_for_deleted_fm_account_becomes_void(self):
+        client,user,job=self.live_job();self.finished_without_report(job)
+        del self.fm.balances[subject_for('alice')]  # 用户在封面搭子注销了账号
+        with self.assertLogs('webapp.credits','WARNING') as logs:self.credits.settle(job['id'])
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'void');self.assertIn('已注销',''.join(logs.output))
+        with self.db.connection(True) as c:c.execute('UPDATE credit_charges SET next_attempt_at=0')
+        self.credits.retry_due();self.assertEqual(self.fm.sent.count('refund'),1)
+    def test_charge_on_closed_reference_is_treated_as_not_charged(self):
+        alice,a=self.client_for('alice')
+        self.fm.before['charge']=lambda payload:self.fm.closed.add(payload['reference'])  # 封面搭子说这个编号已经关了
+        with self.live_ready():r=alice.post('/api/jobs',json={'topic':'AI自媒体','mode':'live'})
+        self.assertEqual(r.status_code,503);self.assertEqual(self.db.jobs(a['id']),[])
+        self.assertEqual([c['state'] for c in self.charges()],['declined']);self.assertEqual(self.fm.balances[subject_for('alice')],10)
+    def test_manage_commands_list_accounts_and_grant_admin(self):
+        from webapp import manage
+        alice,a=self.client_for('alice');self.db.enqueue(a['id'],'示例','all','demo')
+        legacy=self.db.register_public('legacy-owner',PASSWORD)
+        def run(*argv):
+            out,err=io.StringIO(),io.StringIO()
+            with patch('webapp.manage.Settings.from_env',return_value=self.settings),contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+                code=manage.main(list(argv))
+            return code,out.getvalue(),err.getvalue()
+        code,out,_=run('accounts');rows=[line.split('\t') for line in out.strip().splitlines()]
+        self.assertEqual(code,0);self.assertEqual(rows[0],['用户编号','建号时间','最近登录','角色','研究数'])
+        self.assertEqual(len(rows),2);self.assertEqual((rows[1][0],rows[1][3],rows[1][4]),(a['id'],'member','1'));self.assertNotEqual(rows[1][2],'—')
+        self.assertNotIn(subject_for('alice'),out);self.assertNotIn(legacy['id'],out)
+        code,out,_=run('grant-admin',a['id']);self.assertEqual(code,0);self.assertIn('已设为管理员',out)
+        self.assertEqual(alice.get('/api/admin').status_code,200)
+        for user_id,reason in ((legacy['id'],'只能给用封面搭子'),('0'*32,'没有找到'),('not-a-user-id','32 位')):
+            code,_,err=run('grant-admin',user_id);self.assertEqual(code,2);self.assertIn(reason,err)
+        code,out,_=run('revoke-admin',a['id']);self.assertEqual(code,0);self.assertIn('已撤销管理员',out)
+        self.assertEqual(alice.get('/api/admin').status_code,403)
+        with self.db.connection() as c:
+            self.assertEqual([r[0] for r in c.execute("SELECT action FROM audit WHERE action IN ('grant_admin','revoke_admin') ORDER BY id")],['grant_admin','revoke_admin'])
+        for old in ('bootstrap','invite'):
+            code,out,err=run(old);self.assertEqual((code,out),(2,''));self.assertIn('已改为手机号登录',err);self.assertIn('grant-admin',err)
+        with self.db.connection() as c:self.assertEqual(c.execute('SELECT count(*) FROM invites').fetchone()[0],0)
     def test_two_refund_attempts_for_one_charge_send_one_request(self):
         client,user,job=self.live_job()
         self.assertTrue(self.db.queue_refund(job['id'],('charged',)))
@@ -484,8 +618,9 @@ class SettingsTests(unittest.TestCase):
             self.assertNotIn(secret,str(error.exception))
         for base in ('http://fm.zmtgzt.com','https://fm.zmtgzt.com/api','https://user@fm.zmtgzt.com','fm.zmtgzt.com','https://fm.zmtgzt.com:99999'):
             with self.assertRaises(ValueError):Settings(folder,ORIGIN,self.key,fm_client_secret=FM_SECRET,fm_base=base)
-        for credits in (0,101,True,'5'):
+        for credits in (0,51,True,'5'):
             with self.assertRaises(ValueError):Settings(folder,ORIGIN,self.key,fm_client_secret=FM_SECRET,research_credits=credits)
+        self.assertEqual(Settings(folder,ORIGIN,self.key,fm_client_secret=FM_SECRET,research_credits=50).research_credits,50)
         settings=Settings(folder,ORIGIN,self.key,fm_client_secret=FM_SECRET,fm_base='https://fm.zmtgzt.com/')
         self.assertEqual((settings.fm_base,settings.research_credits),('https://fm.zmtgzt.com',5))
         self.assertNotIn(FM_SECRET,repr(settings))
