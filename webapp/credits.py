@@ -225,7 +225,7 @@ class Credits:
             self.db.mark_settled(row['reference'])
             return None
         # 改待退时同一条 SQL 再确认研究没被接续；用户刚点了接续的话，这笔继续留给接续那次用。
-        if not self.db.queue_settle_refund(row['reference']):
+        if not self.db.queue_settle_refund(row['reference'], job['finished_at']):
             return None
         return self.attempt(row['reference'])
 

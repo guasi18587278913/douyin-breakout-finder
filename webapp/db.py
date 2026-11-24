@@ -342,7 +342,7 @@ class Database:
                 c.execute('INSERT INTO credit_charges(reference,job_id,subject,amount,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
                           (reference or job_id,job_id,subject,amount,'charging',now,now))
             except sqlite3.IntegrityError:
-                raise Conflict(SETTLING) from None
+                raise Conflict('积分记录对不上，这次没有开始。') from None
 
     def credit_charge(self, job_id):
         """这份研究当前那笔：最新的一笔，没扣成的尝试不算。"""
@@ -364,8 +364,11 @@ class Database:
             if not current or current['state'] not in ('refunded','void'):raise Conflict(SETTLING)
             count=c.execute('SELECT count(*) FROM credit_charges WHERE job_id=?',(job_id,)).fetchone()[0]
             reference=job_id+'-r'+str(count)
-            c.execute('INSERT INTO credit_charges(reference,job_id,subject,amount,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
-                      (reference,job_id,subject,amount,'charging',now,now))
+            try:
+                c.execute('INSERT INTO credit_charges(reference,job_id,subject,amount,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
+                          (reference,job_id,subject,amount,'charging',now,now))
+            except sqlite3.IntegrityError:
+                raise Conflict('积分记录对不上，这次接续没有开始。') from None  # 只有手工删过记录才会撞号
         return reference
 
     def decline_charge(self, reference):
@@ -380,14 +383,14 @@ class Database:
             return c.execute('UPDATE credit_charges SET state=\'refund_pending\',next_attempt_at=?,updated_at=? WHERE reference=? AND state IN ('+marks+')',
                              (now+delay,now,reference,*states)).rowcount==1
 
-    def queue_settle_refund(self, reference):
-        """研究结束后没有可用报告：把还扣着的这笔改成待退。研究要是已经被接续（排队或运行中）就不动，
-        这个条件和改状态在同一条 SQL 里，后台结算和用户点接续同时发生也不会让接续白跑。"""
+    def queue_settle_refund(self, reference, finished_at):
+        """研究结束后没有可用报告：把还扣着的这笔改成待退。研究要是已经被接续（排队或运行中），或者接续后又结束过一次
+        （结束时间变了，那次要另行核对），就不动。这些条件和改状态在同一条 SQL 里，后台结算和用户点接续同时发生也不会让接续白跑。"""
         now=time.time()
         with self.connection(True) as c:
             return c.execute("UPDATE credit_charges SET state='refund_pending',next_attempt_at=?,updated_at=? WHERE reference=? AND state='charged' "
-                             "AND EXISTS (SELECT 1 FROM jobs j WHERE j.id=credit_charges.job_id AND j.status NOT IN ('queued','running'))",
-                             (now,now,reference)).rowcount==1
+                             "AND EXISTS (SELECT 1 FROM jobs j WHERE j.id=credit_charges.job_id AND j.status NOT IN ('queued','running') AND j.finished_at=?)",
+                             (now,now,reference,finished_at)).rowcount==1
 
     def claim_refund(self, reference, lease):
         """领取一次退款尝试：到期的待退记录先顺延 lease 秒，免得两处同时去退。"""

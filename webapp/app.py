@@ -9,6 +9,7 @@ import secrets
 import time
 import uuid
 from urllib.parse import urlsplit
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
@@ -32,6 +33,8 @@ class Research(Body):
     topic:str=Field(min_length=1,max_length=500)
     focus:str='all'
     mode:str='live'
+class Resume(Body):
+    credits:Optional[int]=Field(default=None,ge=0,le=50)  # 页面上显示的“这次接续用几分”
 class Configure(Body):
     tikhub_key:str=Field(default='',max_length=500)
     deepseek_key:str=Field(default='',max_length=500)
@@ -107,7 +110,11 @@ def create_app(settings=None,fm_transport=None):
         balance='' if error.balance is None else f'，你现在有 {error.balance} 分'
         return JSONResponse({'detail':f'积分不够：跑一次真实研究要 {settings.research_credits} 积分{balance}。请先去封面搭子充值。',
                              'balance':error.balance,'cost':settings.research_credits,'recharge_url':error.recharge_url or credits.recharge_url},402)
-    def fm_down(what):return f'暂时连不上封面搭子的积分服务，{what}没有开始；万一已经扣了分，会自动退回。请稍后再试。'
+    def charge_failed(error,what):
+        """扣分没成时的人话提示：封面搭子账号已注销单独说明，其余按连不上处理。"""
+        if isinstance(error,FmRejected) and error.status==404 and error.code=='unknown_subject':
+            return HTTPException(409,'你的封面搭子账号已不可用（可能已注销），请重新登录后再试。')
+        return HTTPException(503,f'暂时连不上封面搭子的积分服务，{what}没有开始；万一已经扣了分，会自动退回。请稍后再试。')
     def limit(request,bucket,count,seconds):
         address=request.client.host if request.client else 'unknown'
         if not db.allow(bucket+':'+hashlib.sha256(address.encode()).hexdigest(),count,seconds):
@@ -245,7 +252,7 @@ def create_app(settings=None,fm_transport=None):
         job_id=uuid.uuid4().hex
         try:credits.charge(user['subject'],job_id)
         except InsufficientCredits as error:return shortage(error)
-        except (FmUnavailable,FmRejected):raise HTTPException(503,fm_down('研究')) from None
+        except (FmUnavailable,FmRejected) as error:raise charge_failed(error,'研究') from None
         try:job=db.enqueue(user['user_id'],body.topic.strip(),body.focus,'live',job_id=job_id,charged=job_id)
         except Exception as error:
             # 没入队（例如预检之后额度被别的请求占了）就马上退分；退不成的记为待退，由后台重试。
@@ -267,7 +274,7 @@ def create_app(settings=None,fm_transport=None):
         except Exception:logging.getLogger(__name__).error('取消研究后的积分结算暂未完成，后台循环会再试。')
         return public_job(db.job(job_id,job['user_id']))
     @app.post('/api/jobs/{job_id}/resume',status_code=202)
-    def resume(request:Request,job_id:str):
+    def resume(request:Request,job_id:str,body:Resume):
         user=auth(request);job=own(request,job_id);limit(request,'resume',8,3600)
         if not public_job(job)['can_resume']:raise HTTPException(409,'当前没有可接续的研究数据。')
         repair=job['status'] in ('done','report_ready')
@@ -277,10 +284,13 @@ def create_app(settings=None,fm_transport=None):
             return public_job(db.resume(job_id,job['user_id'],allow_completed_repair=repair))
         if current['state'] in ('charging','refund_pending'):raise HTTPException(409,SETTLING)
         # 已经退过分（或封面搭子账号注销后作废）：这次接续重新扣一次，扣成了才排队。
+        # 只在用户看到的就是这个分数时才扣：页面显示过期（比如还写着不另扣）就先不扣，让页面刷新后再确认。
+        if body.credits!=settings.research_credits:
+            raise HTTPException(409,f'这次接续需要用 {settings.research_credits} 积分，页面上的提示已更新，请确认后再点。')
         db.admit(job['user_id'],'resume')  # 只查有没有别的研究进行中；接续不占每日额度
         try:reference=credits.recharge(user['subject'],job_id)
         except InsufficientCredits as error:return shortage(error)
-        except (FmUnavailable,FmRejected):raise HTTPException(503,fm_down('接续')) from None
+        except (FmUnavailable,FmRejected) as error:raise charge_failed(error,'接续') from None
         try:resumed=db.resume(job_id,job['user_id'],allow_completed_repair=repair,charged=reference)
         except Exception as error:
             try:refunded=credits.refund_now(reference,('charging',))

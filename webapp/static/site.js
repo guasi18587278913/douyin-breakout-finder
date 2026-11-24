@@ -91,9 +91,13 @@ el('research-form').addEventListener('submit',async event=>{event.preventDefault
 click('demo-start',()=>start('demo'));click('new-nav',home);click('history-new',home);click('another-job',home);click('history-nav',historyView);click('admin-nav',adminView);
 click('logout',async()=>{await api('/api/logout','POST',{});current=null;await bootstrap();});
 click('cancel-job',async()=>{if(current){const id=current.id,version=navigationVersion;const job=await api('/api/jobs/'+id+'/cancel','POST',{});if(version!==navigationVersion||current?.id!==id)return;current=job;renderJob(job);schedule();}});
-click('resume-job',async()=>{if(current){const id=current.id,version=navigationVersion,cost=current.resume_credits||0;let job;
- try{job=await api('/api/jobs/'+id+'/resume','POST',{});}catch(error){if(error instanceof ApiError&&error.status===402){text('resume-hint-text',shortageFrom(error));show('resume-hint',true);return;}throw error;}
- if(cost>0&&credits!==null){credits=Math.max(0,credits-cost);renderCredits();}show('resume-hint',false);if(version!==navigationVersion||current?.id!==id)return;current=job;autoOpen=job.id;renderJob(job);schedule();}});
+// 接续时带上页面显示的“这次用几分”：要扣的分和页面写的不一致时服务器不扣分、回 409，这里刷新这份研究再让用户确认。
+click('resume-job',async()=>{if(current){const id=current.id,version=navigationVersion,price=current.resume_credits||0;let job;
+ try{job=await api('/api/jobs/'+id+'/resume','POST',{credits:price});}catch(error){
+  if(error instanceof ApiError&&error.status===402){text('resume-hint-text',shortageFrom(error));show('resume-hint',true);return;}
+  if(error instanceof ApiError&&error.status===409){const fresh=await api('/api/jobs/'+id);if(version===navigationVersion&&current?.id===id){current=fresh;renderJob(fresh);}}
+  throw error;}
+ if(price>0&&credits!==null){credits=Math.max(0,credits-price);renderCredits();}show('resume-hint',false);if(version!==navigationVersion||current?.id!==id)return;current=job;autoOpen=job.id;renderJob(job);schedule();}});
 document.querySelectorAll('[data-topic]').forEach(button=>button.addEventListener('click',()=>{/** @type {HTMLTextAreaElement} */(el('topic')).value=/** @type {HTMLElement} */(button).dataset.topic||'';el('topic').focus();}));
 el('provider-form').addEventListener('submit',async event=>{event.preventDefault();try{await api('/api/admin/providers','POST',{tikhub_key:input('tikhub-key').value,deepseek_key:input('deepseek-key').value});input('tikhub-key').value='';input('deepseek-key').value='';const data=await api('/api/bootstrap');csrf=data.csrf;ready=data.ready;await adminView();notice('服务配置已保存。');}catch(error){notice(message(error));}});
 window.addEventListener('hashchange',()=>{const id=new URLSearchParams(location.hash.slice(1)).get('job');if(id&&user)openJob(id).catch(e=>notice(message(e)));});

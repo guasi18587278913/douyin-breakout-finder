@@ -384,7 +384,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.fm.balances[subject],10)
         view=client.get('/api/jobs/'+job['id']).json();self.assertEqual((view['can_resume'],view['resume_credits']),(True,5))
         # 再接续要重新扣一次，扣成了才排队
-        r=client.post(resume,json={});self.assertEqual(r.status_code,202,r.text)
+        r=client.post(resume,json={'credits':5});self.assertEqual(r.status_code,202,r.text)
         self.assertEqual(self.db.job(job['id'])['status'],'queued');self.assertEqual(self.fm.balances[subject],5)
         self.assertEqual([(c['reference'],c['state']) for c in self.db.credit_charges(job['id'])],[(job['id'],'refunded'),(job['id']+'-r1','charged')])
         self.assertEqual(self.fm.calls[-1][1]['reference'],job['id']+'-r1')
@@ -392,7 +392,7 @@ class WebTests(unittest.TestCase):
         self.app.state.worker.execute(self.db.claim())
         self.assertEqual(self.db.credit_charge(job['id'])['state'],'refunded');self.assertEqual(self.fm.balances[subject],10)
         # 再接续，这次拿到报告：这笔留着，一份报告正好 5 分
-        r=client.post(resume,json={});self.assertEqual(r.status_code,202,r.text);self.assertEqual(self.fm.balances[subject],5)
+        r=client.post(resume,json={'credits':5});self.assertEqual(r.status_code,202,r.text);self.assertEqual(self.fm.balances[subject],5)
         from demo import run_demo
         self.db.claim();shutil.rmtree(run_dir(self.settings,job['id']));run_demo(run_dir(self.settings,job['id']),selection=True)
         self.db.finish(job['id'],'done','研究已完成',{});self.credits.settle(job['id']);self.credits.retry_due()
@@ -402,14 +402,14 @@ class WebTests(unittest.TestCase):
         client,user,job=self.live_job();subject=subject_for('alice');resume='/api/jobs/'+job['id']+'/resume'
         self.finished_without_report(job);self.credits.settle(job['id'])
         self.fm.balances[subject]=3
-        r=client.post(resume,json={});self.assertEqual(r.status_code,402)
+        r=client.post(resume,json={'credits':5});self.assertEqual(r.status_code,402)
         self.assertEqual(r.json()['detail'],'积分不够：跑一次真实研究要 5 积分，你现在有 3 分。请先去封面搭子充值。')
         self.fm.balances[subject]=10;self.fm.unreachable.add('charge')
-        r=client.post(resume,json={});self.assertEqual(r.status_code,503);self.assertIn('接续没有开始',r.json()['detail'])
+        r=client.post(resume,json={'credits':5});self.assertEqual(r.status_code,503);self.assertIn('接续没有开始',r.json()['detail'])
         self.assertEqual(self.db.job(job['id'])['status'],'error')
         self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','declined','declined'])
         self.fm.unreachable.clear()
-        self.assertEqual(client.post(resume,json={}).status_code,202)
+        self.assertEqual(client.post(resume,json={'credits':5}).status_code,202)
         self.assertEqual((self.db.credit_charge(job['id'])['reference'],self.fm.balances[subject]),(job['id']+'-r3',5))
     def test_two_resume_clicks_charge_only_once(self):
         # 同时点两次接续：第一次正在向封面搭子扣 -r1 时，第二次要记新的一笔会被拒绝，不会扣出两笔。
@@ -420,7 +420,7 @@ class WebTests(unittest.TestCase):
             try:self.db.begin_resume_charge(job['id'],subject_for('alice'),5);outcomes.append('charged')
             except Conflict as error:outcomes.append(str(error))
         self.fm.before['charge']=second_click
-        self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={}).status_code,202)
+        self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={'credits':5}).status_code,202)
         self.assertEqual(outcomes,['上一笔积分还在结算，请过一两分钟再接续。'])
         self.assertEqual([(c['reference'],c['state']) for c in self.db.credit_charges(job['id'])],[(job['id'],'refunded'),(job['id']+'-r1','charged')])
         self.assertEqual(self.fm.balances[subject_for('alice')],5)
@@ -433,7 +433,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.db.job(job['id'])['status'],'error');self.assertEqual(self.fm.count('charge'),1)
         self.fm.unreachable.clear()
         with self.db.connection(True) as c:c.execute('UPDATE credit_charges SET next_attempt_at=0')
-        self.credits.retry_due();self.assertEqual(client.post(resume,json={}).status_code,202)
+        self.credits.retry_due();self.assertEqual(client.post(resume,json={'credits':5}).status_code,202)
         self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','charged'])
     def test_resume_before_settlement_keeps_the_charge_for_the_resumed_run(self):
         # 并发顺序一：用户先点了接续，后台才结算。研究已在排队，这笔不退，留给接续那次用。
@@ -458,9 +458,58 @@ class WebTests(unittest.TestCase):
         with patch.object(self.db,'resume',settle_in_between):r=client.post(resume,json={})
         self.assertEqual(r.status_code,409);self.assertIn('上一笔积分还在结算',r.json()['detail'])
         self.assertEqual((self.db.job(job['id'])['status'],self.db.credit_charge(job['id'])['state']),('error','refunded'))
-        self.assertEqual(client.post(resume,json={}).status_code,202)
+        self.assertEqual(client.post(resume,json={'credits':5}).status_code,202)
         self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','charged'])
         self.assertEqual(self.fm.balances[subject_for('alice')],5)
+    def test_resume_charges_only_the_price_the_page_showed(self):
+        # 页面在后台结算前读到“接续不另扣”，随后后台把这笔退了：用户按着旧提示点接续，不能就这么扣 5 分。
+        client,user,job=self.live_job();self.finished_without_report(job);resume='/api/jobs/'+job['id']+'/resume'
+        self.assertEqual(client.get('/api/jobs/'+job['id']).json()['resume_credits'],0)
+        self.credits.settle(job['id'])
+        for body in ({'credits':0},{}):
+            r=client.post(resume,json=body);self.assertEqual(r.status_code,409);self.assertIn('需要用 5 积分',r.json()['detail'])
+        self.assertEqual((self.fm.count('charge'),self.fm.balances[subject_for('alice')]),(1,10))
+        self.assertEqual(self.db.job(job['id'])['status'],'error')
+        self.assertEqual(client.get('/api/jobs/'+job['id']).json()['resume_credits'],5)
+        self.assertEqual(client.post(resume,json={'credits':5}).status_code,202);self.assertEqual(self.fm.balances[subject_for('alice')],5)
+    def test_resume_recharge_that_cannot_queue_is_refunded_at_once(self):
+        client,user,job=self.live_job();self.finished_without_report(job);self.credits.settle(job['id'])
+        # 重新扣分的同时，同一用户抢先排上了别的研究：这次接续排不上，刚扣的 -r1 马上退
+        self.fm.before['charge']=lambda payload:payload['reference'].endswith('-r1') and self.db.enqueue(user['id'],'抢先排上的示例','all','demo')
+        r=client.post('/api/jobs/'+job['id']+'/resume',json={'credits':5})
+        self.assertEqual(r.status_code,409);self.assertIn('刚才扣的积分已经退回',r.json()['detail'])
+        self.assertEqual([(c['reference'],c['state']) for c in self.db.credit_charges(job['id'])],[(job['id'],'refunded'),(job['id']+'-r1','refunded')])
+        self.assertEqual((self.db.job(job['id'])['status'],self.fm.balances[subject_for('alice')]),('error',10))
+    def test_resume_recharge_reply_lost_is_refunded_later(self):
+        client,user,job=self.live_job();self.finished_without_report(job);self.credits.settle(job['id']);resume='/api/jobs/'+job['id']+'/resume'
+        self.fm.lost_reply.add('charge')  # 封面搭子扣成了，回应在路上丢了
+        r=client.post(resume,json={'credits':5});self.assertEqual(r.status_code,503);self.assertIn('接续没有开始',r.json()['detail'])
+        self.assertEqual((self.db.job(job['id'])['status'],self.db.credit_charge(job['id'])['state'],self.fm.balances[subject_for('alice')]),('error','refund_pending',5))
+        self.fm.lost_reply.clear()
+        r=client.post(resume,json={'credits':5});self.assertEqual(r.status_code,409);self.assertIn('上一笔积分还在结算',r.json()['detail'])
+        with self.db.connection(True) as c:c.execute('UPDATE credit_charges SET next_attempt_at=0')
+        self.credits.retry_due();self.assertEqual(self.fm.balances[subject_for('alice')],10)
+        self.assertEqual(client.post(resume,json={'credits':5}).status_code,202)
+        self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','refunded','charged'])
+        self.assertEqual(self.fm.balances[subject_for('alice')],5)
+    def test_settlement_skips_a_charge_used_by_a_newer_finished_run(self):
+        # 结算判定“没有报告”之后、改待退之前，用户接续了而且这次接续已经带着报告跑完：这笔不能退。
+        from demo import run_demo
+        client,user,job=self.live_job();self.finished_without_report(job)
+        def resumed_and_finished_meanwhile(job_row):
+            self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={}).status_code,202)
+            self.db.claim();shutil.rmtree(run_dir(self.settings,job['id']));run_demo(run_dir(self.settings,job['id']),selection=True)
+            self.db.finish(job['id'],'done','研究已完成',{});return False
+        with patch.object(self.credits,'delivered',resumed_and_finished_meanwhile):self.credits.settle(job['id'])
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'charged');self.assertEqual(self.fm.sent.count('refund'),0)
+        self.credits.retry_due()  # 新的那次结束按新的结束时间核对：有报告，这笔留着
+        row=self.db.credit_charge(job['id']);self.assertEqual(row['state'],'charged');self.assertIsNotNone(row['settled_at'])
+        self.assertEqual(self.fm.balances[subject_for('alice')],5)
+    def test_charge_for_deleted_fm_account_asks_to_log_in_again(self):
+        alice,a=self.client_for('alice');del self.fm.balances[subject_for('alice')]
+        with self.live_ready():r=alice.post('/api/jobs',json={'topic':'AI自媒体','mode':'live'})
+        self.assertEqual(r.status_code,409);self.assertIn('封面搭子账号已不可用',r.json()['detail'])
+        self.assertEqual(self.db.jobs(a['id']),[]);self.assertEqual([c['state'] for c in self.charges()],['declined'])
     def test_refund_for_deleted_fm_account_becomes_void(self):
         client,user,job=self.live_job();self.finished_without_report(job)
         del self.fm.balances[subject_for('alice')]  # 用户在封面搭子注销了账号
