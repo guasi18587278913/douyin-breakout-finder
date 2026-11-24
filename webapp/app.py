@@ -129,7 +129,7 @@ def create_app(settings=None):
         response.headers['X-Frame-Options']='DENY'
         response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
         policy="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
-        if request.url.path.startswith('/reports/'):
+        if request.url.path.startswith('/reports/') or request.url.path=='/sample':
             policy="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
         response.headers['Content-Security-Policy']=policy
         if not settings.dev:response.headers['Strict-Transport-Security']='max-age=31536000'
@@ -207,6 +207,18 @@ def create_app(settings=None):
             navigation='<nav class="report-site-nav" aria-label="网站导航" style="display:flex;justify-content:space-between;gap:20px;max-width:1200px;margin:0 auto;padding:24px 30px;font-size:13px"><a href="/">← 我的研究</a><a id="new-research-link" href="/?new=1">新研究 ↗</a></nav>'
             return HTMLResponse(re.sub(r'(<body(?:\s[^>]*)?>)',lambda match:match.group(0)+navigation,content,count=1))
         return FileResponse(path)
+    @app.get('/sample')
+    def sample():
+        # 不用登录就能看的示例报告：管理员把一份精编版真实报告放到数据目录 public/ 下，网页只读它，不读任何用户的研究目录。
+        # 只认精编版（class="report-editorial"）：非精编版会带预算、评论样本和运行细节，也有指向下载文件的相对链接。
+        missing=HTMLResponse('<!doctype html><meta charset="utf-8"><title>示例报告</title><p>示例报告暂未提供。<a href="/">返回首页</a></p>',404)
+        try:content=(settings.data_dir/'public'/'sample-report.html').read_text(encoding='utf-8')
+        except (OSError,UnicodeDecodeError):return missing
+        if 'class="report-editorial"' not in content:return missing
+        navigation=('<nav class="report-site-nav" aria-label="网站导航" style="display:flex;justify-content:space-between;gap:20px;max-width:1200px;margin:0 auto;padding:24px 30px;font-size:13px">'
+                    '<a href="/">← 小号爆款首页</a><a href="/#register">注册，研究你自己的方向 ↗</a></nav>'
+                    '<p style="max-width:1200px;margin:0 auto;padding:0 30px 8px;font-size:13px;color:#6b6556">这是一份真实的研究报告示例，数据取自抖音公开作品。</p>')
+        return HTMLResponse(re.sub(r'(<body(?:\s[^>]*)?>)',lambda match:match.group(0)+navigation,content,count=1))
     @app.get('/api/admin')
     def admin(request:Request):
         auth(request,True)

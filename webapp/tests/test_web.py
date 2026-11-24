@@ -117,6 +117,20 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.status_code,200);self.assertIn('href="/?new=1"',response.text)
         self.assertIn("script-src 'none'",response.headers['content-security-policy'])
         self.assertEqual(response.headers['cache-control'],'no-store')
+    def test_public_sample_needs_no_login_and_never_reads_private_runs(self):
+        anonymous=self.client
+        self.assertEqual(anonymous.get('/sample').status_code,404)
+        client,user=self.client_for('owner');job=self.db.enqueue(user['id'],'FDE','all','demo')
+        folder=run_dir(self.settings,job['id']);folder.mkdir(parents=True);(folder/'report.html').write_text('<body>PRIVATE REPORT</body>')
+        self.assertEqual(anonymous.get('/sample').status_code,404)
+        public=self.settings.data_dir/'public';public.mkdir()
+        (public/'sample-report.html').write_text('<html><body><main>RAW REPORT 本轮预算</main></body></html>',encoding='utf-8')
+        self.assertEqual(anonymous.get('/sample').status_code,404)
+        (public/'sample-report.html').write_text('<html><body class="report-editorial"><main>SAMPLE REPORT</main></body></html>',encoding='utf-8')
+        response=anonymous.get('/sample')
+        self.assertEqual(response.status_code,200);self.assertIn('SAMPLE REPORT',response.text);self.assertNotIn('PRIVATE REPORT',response.text)
+        self.assertIn('href="/"',response.text);self.assertIn("script-src 'none'",response.headers['content-security-policy'])
+        self.assertEqual(response.headers['cache-control'],'no-store')
     def test_credentials_encrypted_never_returned_even_validation_error(self):
         client,user=self.client_for('owner','admin');key='SYNTHETIC-NOT-A-REAL-API-KEY-12345'
         r=client.post('/api/admin/providers',json={'tikhub_key':key,'deepseek_key':key})

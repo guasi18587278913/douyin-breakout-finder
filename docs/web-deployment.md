@@ -18,13 +18,26 @@
 
 首次管理员通过 `python -m webapp.manage bootstrap` 生成48小时一次性邀请，使用服务用户及同一私密环境执行。已有管理员时拒绝再次bootstrap；旧邀请维护命令 `python -m webapp.manage invite` 暂留兼容；普通用户无需邀请码。邀请不可写进公开仓库或访问日志，页面读取后立即从地址栏移除。
 
+### 公开示例报告（/sample，2026-11-24）
+
+首页未登录时显示“先看一份真实报告”，指向 `/sample`。网页只读 `数据目录/public/sample-report.html`，不读任何用户的研究目录；文件不存在、读不了，或不是精编版（`<body class="report-editorial">`）时显示“示例报告暂未提供”（404）。非精编版报告带预算、评论样本和运行细节，也有指向下载文件的相对链接，不能放。
+
+先放文件，再发布代码，免得首页入口先上线、点开是 404。用服务用户的属主和权限放置，例如：
+
+```sh
+sudo install -d -o breakout -g breakout -m 700 /var/lib/douyin-breakout/public
+sudo install -o breakout -g breakout -m 600 /var/lib/douyin-breakout/runs/<研究编号>/research/report.html /var/lib/douyin-breakout/public/sample-report.html
+```
+
+2026-11-24 选用的是 2026-10-10“AI自媒体”那份精编报告（3 条精选案例，封面内嵌在页面里）。换一份时同样只选精编版，页面上的说明文字没有写死主题。
+
 `deploy/import-approved-providers.py` 是本次获授权的服务器内一次性导入工具，只读取 topic-remix `.env.local` 中两项服务配置（TikHub 可引用它指定的 Key 文件），不移动源文件，不读其他服务凭证，不打印值。今后使用须重新确认新增用途是否已授权。网页管理员可在管理页自行更换独立配置。
 
 ## 任务与费用
 
 每用户一次进行中的任务，服务全局一次实际研究；近24小时默认全站2次真实研究，每用户2次，排队和失败也计入次数。单轮数据最多50次、USD0.50预留；模型最多USD0.15预留。模型只使用固定DeepSeek HTTPS接口，不读取本机CLI登录。
 
-DeepSeek采用2026-10-10核对的flash高峰缓存未命中报价：输入USD0.30/百万token，输出USD1.20/百万token。来源：<https://api-docs.deepseek.com/quick_start/pricing/>。每次发送前，以UTF-8字节数加消息余量估算输入上界，并预留最大输出；失败、验证重写、页面接续都保留同一份模型账本。报价超过30天暂停新的模型分析，维护者核对官方型号/价格后更新常量并按发布流程交付。此处费用是保守预留，实际账单以供应商为准。
+DeepSeek采用2026-11-24重新核对的flash高峰缓存未命中报价（与2026-10-10首次核对时相同）：输入USD0.30/百万token，输出USD1.20/百万token。来源：<https://api-docs.deepseek.com/quick_start/pricing/>。每次发送前，以UTF-8字节数加消息余量估算输入上界，并预留最大输出；失败、验证重写、页面接续都保留同一份模型账本。报价超过30天暂停新的模型分析，维护者核对官方型号/价格后更新常量并按发布流程交付。此处费用是保守预留，实际账单以供应商为准。
 
 每次真实任务匿名读取TikHub报价。网站启用批量统计：25至50个缺失ID，批量费用不高于小接口估算2倍且剩余额度可容纳时合并；否则沿用小接口。无自动收费重试。显式开发者重试保留原批量分组，并重算所有受新数据影响的既有结果。
 

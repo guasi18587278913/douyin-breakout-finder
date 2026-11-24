@@ -15,7 +15,7 @@ URL = 'https://api.deepseek.com/chat/completions'
 MODEL = 'deepseek-flash'
 LIMIT = Decimal('0.15')
 PRICE_SOURCE = 'https://api-docs.deepseek.com/quick_start/pricing/'
-PRICE_CHECKED_AT = '2026-10-10'
+PRICE_CHECKED_AT = '2026-11-24'
 # Peak cache-miss rates; actual off-peak and cached usage may cost less.
 
 

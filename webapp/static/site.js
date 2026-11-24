@@ -27,7 +27,7 @@ function authMode(){text('auth-title',registering?'创建账号':'登录账号')
 async function bootstrap(){
  const data=await api('/api/bootstrap');user=data.user;csrf=data.csrf;ready=data.ready;remaining=data.remaining||0;
  for(const id of ['new-nav','history-nav','logout'])show(id,!!user);show('admin-nav',user?.role==='admin');text('account',user?.username||'');
- if(!user){switchView('auth');authMode();return;}
+ if(!user){if(location.hash==='#register')registering=true;switchView('auth');authMode();return;}
  const params=new URLSearchParams(location.hash.slice(1));const id=params.get('job');
  home();
  if(id){try{await openJob(id);}catch(error){notice(message(error));}}
