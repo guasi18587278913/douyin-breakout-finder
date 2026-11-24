@@ -44,7 +44,7 @@ class Configure(Body):
 def create_app(settings=None,fm_transport=None):
     settings=settings or Settings.from_env()
     db=Database(settings);vault=Secrets(settings);fm=FmClient(settings,fm_transport)
-    # delivered 用到下面定义的 public_job：研究是否已有可用报告，以网页显示的结论为准。
+    # delivered 用到下面定义的 public_job：研究有没有产出结果，以网页显示的结论为准。
     credits=Credits(settings,db,fm,lambda job:delivered(job))
     worker=Worker(settings,db,vault,credits)
     cookie='breakout_session' if settings.dev else '__Host-breakout_session'
@@ -102,12 +102,13 @@ def create_app(settings=None,fm_transport=None):
                 'can_resume':can_resume,
                 # 接续要用几分：当前那笔还扣着就是 0；退过分了要重新扣
                 'resume_credits':credits.resume_cost(job['id']) if can_resume else 0}
-    def delivered(job):
-        """研究有没有产出结果：网页显示为 done/report_ready、已有能读的报告，或研究进度里已经展示过至少一条
-        已核验作品。研究没有产出任何结果才退回积分。"""
-        view=public_job(job);progress=view['progress']
+    def has_results(view):
+        """研究有没有产出结果：网页显示为 done/report_ready、已有能读的报告，或研究进度里仍展示着至少一条已核验作品。
+        研究没有产出任何结果才退回积分。"""
+        progress=view['progress']
         shown=progress.get('usable_results') if isinstance(progress,dict) else None
         return view['status'] in ('done','report_ready') or view['report_ready'] or bool(shown)
+    def delivered(job):return has_results(public_job(job))
     def shortage(error):
         """积分不够时的 402：开始研究和接续用同一套文案。"""
         balance='' if error.balance is None else f'，你现在有 {error.balance} 分'
@@ -272,6 +273,7 @@ def create_app(settings=None,fm_transport=None):
             except Exception:
                 refunded=False
                 logging.getLogger(__name__).error('入队失败后的积分退回暂未完成，后台循环会再试。')
+            if get_session(request) is None:return signed_out()  # 退分时封面搭子说账号已注销，会话已删
             if isinstance(error,Conflict):
                 raise Conflict(str(error)+('刚才扣的积分已经退回。' if refunded else '刚才扣的积分会自动退回。')) from None
             raise
@@ -284,15 +286,19 @@ def create_app(settings=None,fm_transport=None):
         # 排队时就被取消的真实研究不会再跑：没有报告，退回积分。正在跑的等研究收尾后由后台结算。
         try:credits.settle(job_id)
         except Exception:logging.getLogger(__name__).error('取消研究后的积分结算暂未完成，后台循环会再试。')
+        if get_session(request) is None:return signed_out()  # 退分时封面搭子说账号已注销，会话已删
         return public_job(db.job(job_id,job['user_id']))
     @app.post('/api/jobs/{job_id}/resume',status_code=202)
     def resume(request:Request,job_id:str,body:Resume):
         user=auth(request);job=own(request,job_id);limit(request,'resume',8,3600)
-        if not public_job(job)['can_resume']:raise HTTPException(409,'当前没有可接续的研究数据。')
+        view=public_job(job)
+        if not view['can_resume']:raise HTTPException(409,'当前没有可接续的研究数据。')
         repair=job['status'] in ('done','report_ready')
         current=db.credit_charge(job_id)
         # 没扣过分（合成示例等）或这份研究还扣着分：不另扣。接续事务里会再确认这笔还扣着。
         if current is None or current['state']=='charged':
+            # 已经产出结果、只是还没来得及结算的：先记为已交付。接续一开始会清空进度，免得接续失败后被当成没结果退掉。
+            if current and current['settled_at'] is None and has_results(view):db.mark_settled(current['reference'])
             return public_job(db.resume(job_id,job['user_id'],allow_completed_repair=repair))
         if current['state'] in ('charging','refund_pending'):raise HTTPException(409,SETTLING)
         # 已经退过分（或封面搭子账号注销后作废）：这次接续重新扣一次，扣成了才排队。
@@ -310,6 +316,7 @@ def create_app(settings=None,fm_transport=None):
             except Exception:
                 refunded=False
                 logging.getLogger(__name__).error('接续没排上后的积分退回暂未完成，后台循环会再试。')
+            if get_session(request) is None:return signed_out()  # 退分时封面搭子说账号已注销，会话已删
             if isinstance(error,Conflict):
                 raise Conflict(str(error)+('刚才扣的积分已经退回。' if refunded else '刚才扣的积分会自动退回。')) from None
             raise

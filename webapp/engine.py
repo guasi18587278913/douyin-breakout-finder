@@ -154,7 +154,7 @@ class Worker:
             with self.lock:self.current.pop(job['id'],None)
         self.settle_credits(job['id'])
     def settle_credits(self,job_id=None):
-        """研究结束后核对积分（没生成可用报告就退回）；空闲时补退之前没退成的。出错不影响研究队列，下一轮再试。"""
+        """研究结束后核对积分（没有产出任何结果就退回）；空闲时补退之前没退成的。出错不影响研究队列，下一轮再试。"""
         if not self.credits:return
         try:
             if job_id:self.credits.settle(job_id)

@@ -538,16 +538,49 @@ class WebTests(unittest.TestCase):
         self.fm.balances[subject]=7;calls=self.fm.count('balance')
         again,_=self.client_for('alice')
         self.assertEqual(again.get('/api/bootstrap').json()['credits'],7);self.assertEqual(self.fm.count('balance'),calls+1)
+    def test_refund_during_cancel_for_deleted_fm_account_signs_out(self):
+        client,user,job=self.live_job();phone,_=self.client_for('alice')
+        del self.fm.balances[subject_for('alice')]  # 研究还在排队，用户在封面搭子注销了账号
+        r=client.post('/api/jobs/'+job['id']+'/cancel',json={})
+        self.assertEqual(r.status_code,401);self.assertIn('已注销或不可用',r.json()['detail'])
+        self.assertTrue(any(c.startswith('__Host-breakout_session=') and 'Max-Age=0' in c for c in r.headers.get_list('set-cookie')))
+        self.assertEqual(self.db.job(job['id'])['status'],'cancelled');self.assertEqual(self.db.credit_charge(job['id'])['state'],'void')
+        self.assertEqual(self.sessions_of(user['id']),0);self.assertEqual(phone.get('/api/jobs').status_code,401)
+    def test_refund_after_failed_enqueue_for_deleted_fm_account_signs_out(self):
+        alice,a=self.client_for('alice')
+        def race_then_gone(payload):
+            self.db.enqueue(a['id'],'抢先排上的示例','all','demo')  # 入队会失败
+            self.fm.before['refund']=lambda refund:self.fm.balances.pop(subject_for('alice'),None)  # 退分时账号已经注销
+        self.fm.before['charge']=race_then_gone
+        with self.live_ready():r=alice.post('/api/jobs',json={'topic':'AI自媒体','mode':'live'})
+        self.assertEqual(r.status_code,401);self.assertIn('已注销或不可用',r.json()['detail'])
+        self.assertEqual([c['state'] for c in self.charges()],['void']);self.assertEqual(self.sessions_of(a['id']),0)
+    def test_results_shown_before_an_unsettled_resume_keep_the_charge(self):
+        # 已经展示出已核验作品，服务重启打断后还没来得及结算，用户就先接续了；接续一开始清空进度又失败：这笔不能退。
+        client,user,job=self.live_job()
+        card={'target':{'id':'7000000000000000002','title':'合成作品','author_name':'合成作者','followers':600},'play_count':90000,'ratio':9.0}
+        self.db.claim();self.db.progress(job['id'],'正在核对账号作品和播放量',{'qualified':1,'usable_results':[card]})
+        self.db.recover_interrupted()
+        folder=run_dir(self.settings,job['id']);folder.mkdir(parents=True);(folder/'state.json').write_text('{}')
+        self.assertIsNone(self.db.credit_charge(job['id'])['settled_at'])
+        self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={}).status_code,202);self.assertEqual(self.fm.count('charge'),1)
+        self.app.state.worker.execute(self.db.claim())
+        self.assertEqual(json.loads(self.db.job(job['id'])['progress_json']).get('usable_results'),[])
+        self.credits.retry_due()
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'charged');self.assertEqual(self.fm.balances[subject_for('alice')],5)
+        self.assertEqual(self.fm.sent.count('refund'),0)
     def test_fm_outage_and_errors_keep_users_signed_in(self):
         alice,a=self.client_for('alice');start=time.monotonic()
         failures=[('连不上',lambda:self.fm.unreachable.add('balance')),('超时',lambda:self.fm.lost_reply.add('balance')),
                   ('5xx',lambda:self.fm.errors.update({'balance':(500,{'error':'internal'})})),
                   ('502 也带着 unknown_subject 字样',lambda:self.fm.errors.update({'balance':(502,{'error':'unknown_subject'})})),
+                  ('404 但错误码不是原样的 unknown_subject',lambda:self.fm.errors.update({'balance':(404,{'error':' unknown_subject\n'})})),
                   ('密钥不对',lambda:setattr(self.fm,'secret','another-secret-on-fm-side'))]
         for step,(name,fail) in enumerate(failures,1):
             self.fm.unreachable.clear();self.fm.lost_reply.clear();self.fm.errors.clear();self.fm.secret=FM_SECRET;fail()
-            self.credits.clock=lambda step=step:start+31*step
+            self.credits.clock=lambda step=step:start+31*step;sent=self.fm.sent.count('balance')
             data=alice.get('/api/bootstrap').json()
+            self.assertEqual(self.fm.sent.count('balance'),sent+1,name)  # 确实去查了封面搭子，不是命中缓存
             self.assertEqual(data['user']['id'],a['id'],name);self.assertIsNone(data['credits'],name);self.assertIsNone(data['notice'],name)
             self.assertEqual(self.sessions_of(a['id']),1,name);self.assertEqual(alice.get('/api/jobs').status_code,200,name)
         self.fm.secret=FM_SECRET;self.fm.errors.update({'charge':(500,{'error':'internal'})})

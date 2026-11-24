@@ -395,7 +395,7 @@ class Database:
                              (now+delay,now,reference,*states)).rowcount==1
 
     def queue_settle_refund(self, reference, finished_at):
-        """研究结束后没有可用报告：把还扣着的这笔改成待退。研究要是已经被接续（排队或运行中），或者接续后又结束过一次
+        """研究结束后没有产出任何结果：把还扣着的这笔改成待退。研究要是已经被接续（排队或运行中），或者接续后又结束过一次
         （结束时间变了，那次要另行核对），就不动。这些条件和改状态在同一条 SQL 里，后台结算和用户点接续同时发生也不会让接续白跑。"""
         now=time.time()
         with self.connection(True) as c:
@@ -428,7 +428,7 @@ class Database:
             c.execute('UPDATE credit_charges SET next_attempt_at=?,updated_at=? WHERE reference=?',(now+seconds,now,reference))
 
     def mark_settled(self, reference):
-        """研究已有可用报告，这次结束后不退分；以后接续再结束时会重新核对。"""
+        """这笔已经交付过结果，记下核对时间：以后接续再结束也不退，只把核对时间往后记。"""
         now=time.time()
         with self.connection(True) as c:
             c.execute("UPDATE credit_charges SET settled_at=?,updated_at=? WHERE reference=? AND state='charged'",(now,now,reference))

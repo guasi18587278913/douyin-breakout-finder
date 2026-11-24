@@ -1,7 +1,7 @@
 """封面搭子账号接入：授权码换账号标识、查积分、扣分和退款。
 
 只走封面搭子约定的服务器对服务器接口，拿不到也不保存手机号。接入密钥只放在请求头里，
-不进日志、不进报错。真实研究开始前按研究编号扣分；研究最终没有可用报告就退回，
+不进日志、不进报错。真实研究开始前按研究编号扣分；研究没有产出任何结果才退回，
 退款没成功的记录留在数据库里，由后台循环按退避时间重试，不会丢。
 """
 import logging
@@ -100,9 +100,9 @@ class FmClient:
     def failure(operation, status, data):
         # 4xx 说明对方收到并拒绝了，什么都没改；5xx、跳转或看不懂的回应都算“结果不确定”。
         # 日志记接口名、状态码和对方的错误码，方便排查密钥填错、回调地址没登记等问题。
-        code = re.sub(r'[^A-Za-z0-9_.-]', '', str(data.get('error', '')))[:40]
+        code = re.sub(r'[^A-Za-z0-9_.-]', '', str(data.get('error', '')))[:40]  # 只用于日志和展示
         log.warning('封面搭子接口 %s 未成功：HTTP %s %s', operation, status, code)
-        if status == 404 and code == 'unknown_subject':
+        if status == 404 and data.get('error') == 'unknown_subject':  # 按原样精确比较
             return AccountGone(status, code)
         if 400 <= status < 500:
             return FmRejected(status, code)
@@ -138,7 +138,7 @@ class FmClient:
 
 
 class Credits:
-    """真实研究的积分记账。delivered(job) 判断研究是否已有可用报告，由网页入口按 public_job 的结论提供。"""
+    """真实研究的积分记账。delivered(job) 判断研究有没有产出结果，由网页入口按 public_job 的结论提供。"""
 
     def __init__(self, settings, db, client, delivered):
         self.db, self.client, self.delivered = db, client, delivered
@@ -228,7 +228,7 @@ class Credits:
         return self.attempt(reference)
 
     def settle(self, job_id):
-        """研究结束（含排队时被取消、被重启打断）后调用：当前那笔还扣着、却没有可用报告，就退回。返回值同 refund_now。"""
+        """研究结束（含排队时被取消、被重启打断）后调用：当前那笔还扣着、研究却没有产出任何结果，就退回。返回值同 refund_now。"""
         job = self.db.job(job_id)
         if not job or job['status'] in ('queued', 'running') or job['finished_at'] is None:
             return None
