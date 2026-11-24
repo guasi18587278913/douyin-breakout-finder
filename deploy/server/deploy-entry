@@ -1,0 +1,19 @@
+#!/bin/bash
+# 部署账号 deployer 的唯一入口（2026-11-24）。服务器上装在 /usr/local/sbin/deploy-entry（root 所有、755）。
+# GitHub Actions 用的钥匙在 /home/deployer/.ssh/authorized_keys 里写成：
+#   restrict,command="/usr/local/sbin/deploy-entry <站点>" ssh-ed25519 AAAA... <说明>
+# 所以这把钥匙连上来以后，不管对方想执行什么，都只会走到这里；这里只认一种命令：deploy <40 位提交号>，
+# 再交给对应站点的部署脚本（sudoers 只放行这些脚本）。
+set -euo pipefail
+site=${1:-}
+cmd=${SSH_ORIGINAL_COMMAND:-}
+if [[ ! $cmd =~ ^deploy\ ([0-9a-f]{40})$ ]]; then
+  echo "只接受：deploy <40 位提交号>" >&2
+  exit 2
+fi
+sha=${BASH_REMATCH[1]}
+case $site in
+  breakout) exec sudo -n /usr/local/sbin/deploy-breakout "$sha" ;;
+  duibiao) exec sudo -n /usr/local/sbin/deploy-duibiao "$sha" ;;
+  *) echo "不认识的站点" >&2; exit 2 ;;
+esac

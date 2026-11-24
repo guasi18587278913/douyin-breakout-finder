@@ -14,6 +14,23 @@
 
 ## 发布
 
+### 合进 main 自动上线（2026-11-24 起）
+
+产品负责人 2026-11-24 决定：GitHub 的 main 就是线上版本，合进 main 就自动上线，换电脑、换工具也不会出现“线上和 GitHub 对不上”。
+
+- **流程**：开分支 → 提 PR（这时会跑 `.github/workflows/acceptance.yml` 那套检查）→ 合进 main → main 上再跑一遍同一套检查 → 全部通过后，`.github/workflows/deploy.yml` 让香港服务器部署 main 上的这个提交。检查没通过就不部署。
+- **服务器那边**（`deploy/server/` 里有两个脚本的原件）：
+  - GitHub 用的钥匙只能登录部署账号 `deployer`。它在 `authorized_keys` 里被强制成只能执行 `/usr/local/sbin/deploy-entry breakout`；这个入口只认 `deploy <40 位提交号>`，再经 sudo 调 `/usr/local/sbin/deploy-breakout`，sudo 也只放行这一个脚本。
+  - `deploy-breakout` 只部署 GitHub 上 main 当前最新的提交（main 已有更新的提交就跳过，交给那次合并），线上已经是这个版本就不动。
+  - 部署顺序：等排队和正在跑的研究结束（最多 20 分钟，超时就不部署）→ 备份数据库到 `/var/backups/douyin-breakout/`（留最近 5 份）→ `git archive` 放进 `/opt/douyin-breakout/releases/<提交号>` → `install-release.sh`（它自己的健康检查失败会退回旧版本）→ 经 Caddy 核对健康检查、`/sample` 和登录入口，没通过就重装上一个版本。
+- **GitHub 仓库的秘密**：`DEPLOY_SSH_KEY`（上面那把钥匙的私钥）、`DEPLOY_KNOWN_HOSTS`（固定服务器的身份指纹，防止连到冒充的服务器）、`DEPLOY_HOST`。私钥只存在 GitHub 的秘密里，本机不留。
+- **重跑或手动部署**：在 GitHub 的 Actions 页面打开 “Deploy to breakout.zmtgzt.com”，点 “Run workflow”，部署 main 的最新提交。也可以在服务器上执行 `sudo /usr/local/sbin/deploy-breakout <main 最新的 40 位提交号>`。
+- **退回**：把出问题的改动在 GitHub 上 revert（新开一个 PR 撤销它）再合并，就会自动部署撤销后的版本。紧急时可以在服务器上重装上一个版本：`sudo bash /opt/douyin-breakout/releases/<旧提交号>/deploy/install-release.sh /opt/douyin-breakout/releases/<旧提交号>`。这时线上和 main 暂时不一致，事后要补 revert。
+- **要先改配置的改动**：新版本需要新的环境变量或密钥时，先在服务器的 `/etc/douyin-breakout.env` 加好（旧版本不读，先加不影响线上），再合并。顺序反了，新版本启动不了，会自动退回旧版本，部署失败。
+- 部署日志出现在 GitHub Actions 的公开日志里：只打印版本号、步骤和结果，不打印配置和密钥。安装脚本的完整输出在服务器 `/var/log/deploy-breakout-install.log`。
+
+### 手动发布（原流程，自动上线出问题时用）
+
 先完成受影响检查、前端类型检查和独立审查，记录确定的 Git 提交。将该提交的 `git archive` 放入对应发布目录，使用 `sudo bash <release>/deploy/install-release.sh <release>` 安装。脚本只更改本项目文件；失败恢复旧版本、旧服务配置及旧Caddy站点，保留数据和主密钥。回滚不执行数据库逆迁移；当前仅有初始schema版本1，未来迁移另行授权。
 
 管理员在服务器上指定：让对方先用手机号登录一次，再用 `python -m webapp.manage accounts` 查到用户编号、`grant-admin <用户编号>` 设为管理员（命令和执行方式见下文“封面搭子账号登录与积分”）。原来生成邀请链接的 `bootstrap`、`invite` 已停用，执行时直接报错退出并提示改用 grant-admin；管理页的发邀请接口返回 410。旧邀请链接打开后只会落到登录按钮上，页面仍会立即把它从地址栏移除。
