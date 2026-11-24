@@ -1,0 +1,105 @@
+#!/bin/bash
+# 小号爆款：把 GitHub 上 main 的指定提交部署到香港服务器（2026-11-24 起“合进 main 自动上线”）。
+# 服务器上装在 /usr/local/sbin/deploy-breakout（root 所有、755），由部署账号 deployer 经 sudo 调用，也可以手动跑：
+#   sudo /usr/local/sbin/deploy-breakout <40 位提交号>
+# 规则：只部署 GitHub 上 main 当前最新的那个提交；main 已经有更新的提交就跳过（交给那次合并）；线上已经是这个版本就什么都不做。
+# 步骤：从 GitHub 取代码 → 等正在跑的研究结束（最多 20 分钟）→ 备份数据库（留最近 5 份）→ 放进新版本目录
+#       → install-release.sh（它自己的健康检查失败会退回旧版本）→ 经 Caddy 核对 → 核对失败就重装上一个版本。
+# 输出会出现在 GitHub Actions 的公开日志里：只打印版本号、步骤和结果，不打印配置和密钥。
+set -euo pipefail
+umask 077
+
+REPO=https://github.com/guasi18587278913/douyin-breakout-finder.git
+CACHE=/var/cache/deploy/douyin-breakout-finder.git
+RELEASES=/opt/douyin-breakout/releases
+CURRENT=/opt/douyin-breakout/current
+DB=/var/lib/douyin-breakout/site.sqlite3
+BACKUPS=/var/backups/douyin-breakout
+HOST=breakout.zmtgzt.com
+FM_AUTHORIZE='https://fm.zmtgzt.com/connect/authorize?client_id=breakout&redirect_uri=https%3A%2F%2Fbreakout.zmtgzt.com%2Fauth%2Fcallback&state='
+
+say() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+die() { say "停止：$*"; exit 1; }
+
+[[ $(id -u) == 0 ]] || die "要用 root 运行"
+sha=${1:-}
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || die "需要 40 位提交号"
+exec 9>/var/lock/deploy-breakout.lock
+flock -w 1800 9 || die "另一次部署 30 分钟还没结束"
+
+install -d -m 700 /var/cache/deploy "$BACKUPS"
+[[ -d $CACHE ]] || git clone -q --bare "$REPO" "$CACHE"
+git -C "$CACHE" fetch -q --prune origin '+refs/heads/main:refs/heads/main'
+main=$(git -C "$CACHE" rev-parse refs/heads/main)
+if [[ $sha != "$main" ]]; then
+  git -C "$CACHE" merge-base --is-ancestor "$sha" "$main" 2>/dev/null || die "${sha:0:7} 不在 GitHub 的 main 上"
+  say "main 上已经有更新的提交 ${main:0:7}，这次跳过，由那次合并触发部署"
+  exit 0
+fi
+previous=$(readlink -f "$CURRENT")
+[[ $previous =~ ^$RELEASES/[0-9a-f]{40}$ ]] || die "当前版本目录不认识"
+if [[ $previous == "$RELEASES/$sha" ]]; then
+  say "线上已经是 ${sha:0:7}，不用部署"
+  exit 0
+fi
+say "准备部署 ${sha:0:7}（线上现在是 $(basename "$previous" | cut -c1-7)）"
+
+# 等正在跑和排队的研究结束，免得重启把它们打断
+busy=1
+for i in $(seq 1 120); do
+  busy=$(python3 - "$DB" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+print(c.execute("select count(*) from jobs where status in ('queued','running')").fetchone()[0])
+PY
+)
+  [[ $busy == 0 ]] && break
+  (( i % 6 == 1 )) && say "还有 $busy 项研究在跑或排队，等它们结束"
+  sleep 10
+done
+[[ $busy == 0 ]] || die "等了 20 分钟研究还没结束，这次不部署；之后在 GitHub 上手动重跑这次部署"
+
+backup="$BACKUPS/site-before-${sha:0:12}-$(date +%Y%m%d-%H%M%S).sqlite3"
+python3 - "$DB" "$backup" <<'PY'
+import sqlite3, sys
+s = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+d = sqlite3.connect(sys.argv[2])
+s.backup(d)
+assert d.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+PY
+chmod 600 "$backup"
+ls -1t "$BACKUPS"/site-before-*.sqlite3 | tail -n +6 | xargs -r rm -f
+say "数据库已备份（服务器上留最近 5 份）"
+
+rel="$RELEASES/$sha"
+if [[ ! -d $rel ]]; then
+  tmp=$(mktemp -d "$RELEASES/.incoming.XXXXXX")
+  git -C "$CACHE" archive "$sha" | tar -x -C "$tmp"
+  chown -R root:root "$tmp"
+  chmod -R go-w "$tmp"
+  chmod 755 "$tmp"
+  mv "$tmp" "$rel"
+fi
+say "安装新版本（失败会自动退回旧版本）"
+bash "$rel/deploy/install-release.sh" "$rel" > /var/log/deploy-breakout-install.log 2>&1 || {
+  tail -n 5 /var/log/deploy-breakout-install.log | grep -v -i -E 'key|secret|token' || true
+  die "安装脚本失败，已退回旧版本"
+}
+[[ $(readlink -f "$CURRENT") == "$rel" ]] || die "安装脚本没有切到新版本"
+
+check() { curl -sS --max-time 15 --resolve "$HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || true; }
+verify() {
+  [[ $(check "https://$HOST/health") == 200 ]] || return 1
+  [[ $(check "https://$HOST/sample") == 200 ]] || return 1
+  local loc
+  loc=$(curl -sS --max-time 15 --resolve "$HOST:443:127.0.0.1" -o /dev/null -w '%{http_code} %{redirect_url}' "https://$HOST/auth/start" 2>/dev/null || true)
+  [[ $loc == "302 $FM_AUTHORIZE"* ]] || return 1
+}
+ok=0
+for i in 1 2 3 4 5 6; do verify && { ok=1; break; }; sleep 5; done
+if (( ! ok )); then
+  say "经 Caddy 核对没通过，重装上一个版本 $(basename "$previous" | cut -c1-7)"
+  bash "$previous/deploy/install-release.sh" "$previous" > /var/log/deploy-breakout-rollback.log 2>&1 || die "退回旧版本也失败了，需要人工处理"
+  die "新版本核对没通过，已退回旧版本"
+fi
+say "部署完成：线上现在是 ${sha:0:7}（健康检查、示例页、登录入口都正常）"

@@ -1,0 +1,39 @@
+name: Deploy to breakout.zmtgzt.com
+# 2026-11-24 起：合进 main、上面那套检查（Public install and browser acceptance）全部通过后，自动让香港服务器部署 main 上的这个版本。
+# 服务器那边只认 “deploy <40 位提交号>”，而且只部署 GitHub 上 main 当前最新的提交；部署失败会自动退回旧版本。
+# 也可以在 Actions 页面手动点 “Run workflow” 重跑（部署 main 的最新提交）。
+on:
+  workflow_run:
+    workflows: ["Public install and browser acceptance"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-breakout
+  cancel-in-progress: false
+jobs:
+  deploy:
+    # 只在 main 上的推送（合并）检查通过后部署；别人从 fork 提的 PR 不会触发
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: 让香港服务器部署 main 上的这个版本
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            "deployer@$DEPLOY_HOST" "deploy $SHA"
