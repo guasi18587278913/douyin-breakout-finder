@@ -14,6 +14,15 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from contextlib import contextmanager
 
 
+# 封面搭子登录建立的用户没有本站密码：这个值不是合法的盐和摘要格式，任何密码都比对不上。
+FM_ONLY_PASSWORD = '!fm-login-only'
+# 发出扣分请求后超过这么久还停在“扣分中”的记录，说明当时进程中断了，按待退处理。
+STALE_CHARGE_SECONDS = 120
+# 这份研究当前那笔扣分：最新的一笔，没扣成的尝试不算。
+CURRENT_CHARGE = "SELECT * FROM credit_charges WHERE job_id=? AND state!='declined' ORDER BY rowid DESC LIMIT 1"
+SETTLING = '上一笔积分还在结算，请过一两分钟再接续。'
+
+
 class Conflict(Exception):
     pass
 
@@ -77,9 +86,29 @@ class Database:
             CREATE INDEX IF NOT EXISTS jobs_user_time ON jobs(user_id,created_at DESC);
             CREATE TABLE IF NOT EXISTS rates (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, expires_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, user_id TEXT, action TEXT NOT NULL, job_id TEXT);
+            -- 2026-11-24 起只用封面搭子账号登录：subject 是封面搭子给本站的账号标识，不含手机号。
+            CREATE TABLE IF NOT EXISTS external_accounts (
+              subject TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE REFERENCES users(id), created_at REAL NOT NULL);
+            -- 真实研究扣的封面搭子积分。一份研究可以有多笔：开始研究扣一笔（reference 就是研究编号），
+            -- 退过分之后再接续，用 <研究编号>-r1、-r2… 再扣一笔。“这份研究当前那笔”取最新一笔（没扣成的不算）。
+            -- job_id 先生成再扣分，所以这里不设到 jobs 的外键。
+            -- charging=已发出扣分请求还没落定；charged=已扣、研究已排队；declined=确认没扣成；
+            -- refund_pending=要退、还没和封面搭子确认；refunded=封面搭子确认这笔不再扣着；
+            -- void=封面搭子账号已注销，这笔退不了，不再重试。
+            CREATE TABLE IF NOT EXISTS credit_charges (
+              reference TEXT PRIMARY KEY, job_id TEXT NOT NULL, subject TEXT NOT NULL,
+              amount INTEGER NOT NULL CHECK(amount>0),
+              state TEXT NOT NULL CHECK(state IN ('charging','charged','declined','refund_pending','refunded','void')),
+              attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at REAL NOT NULL DEFAULT 0, settled_at REAL,
+              created_at REAL NOT NULL, updated_at REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS credit_charges_job ON credit_charges(job_id,created_at);
+            CREATE INDEX IF NOT EXISTS credit_charges_due ON credit_charges(state,next_attempt_at);
             ''')
             if c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] != '1':
                 raise RuntimeError('Database schema requires an explicit migration.')
+            # 0fee398 那版的扣分表以研究编号为主键（那版没有上线）。真遇到这种库就停下，免得按错的结构记账。
+            if not any(row['name']=='reference' and row['pk'] for row in c.execute('PRAGMA table_info(credit_charges)')):
+                raise RuntimeError('credit_charges 是未上线的旧结构，请先确认这张表为空并删除后再启动。')
         if os.name != 'nt': self.path.chmod(0o600)
         self.dummy_password = password_hash('not-a-real-account-password')
 
@@ -176,12 +205,38 @@ class Database:
             c.execute('DELETE FROM sessions WHERE expires_at<?', (time.time(),))
         return token, csrf
 
+    def external_user(self, subject):
+        """用封面搭子的 subject 找到本站用户；第一次登录时新建一个普通成员。"""
+        now = time.time()
+        with self.connection(True) as c:
+            row = c.execute('SELECT user_id FROM external_accounts WHERE subject=?', (subject,)).fetchone()
+            if row:
+                user_id = row['user_id']
+            else:
+                user_id = uuid.uuid4().hex
+                # 用户名取随机的用户编号，不从 subject 推出来；旧账号的用户名只允许文字、字母、数字、点和短横线，
+                # 带冒号的名字不会和它们撞上。
+                name = 'fm:' + user_id[:16]
+                if c.execute('SELECT 1 FROM users WHERE username=?', (name,)).fetchone(): name = 'fm:' + user_id
+                c.execute('INSERT INTO users VALUES (?,?,?,?,?)', (user_id,name,FM_ONLY_PASSWORD,'member',now))
+                c.execute('INSERT INTO external_accounts VALUES (?,?,?)', (subject,user_id,now))
+                c.execute('INSERT INTO audit(at,user_id,action) VALUES (?,?,?)', (now,user_id,'fm_register'))
+            c.execute('INSERT INTO audit(at,user_id,action) VALUES (?,?,?)', (now,user_id,'fm_login'))
+        return self.user(user_id)
+
     def session(self, token):
         if not isinstance(token,str) or len(token)>100: return None
+        # 只认绑定了封面搭子账号的用户：旧的用户名密码账号即使会话没过期也立即失效。
         with self.connection() as c:
-            row = c.execute('SELECT s.csrf,s.user_id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?',
+            row = c.execute('SELECT s.csrf,s.user_id,u.username,u.role,e.subject FROM sessions s JOIN users u ON u.id=s.user_id '
+                            'JOIN external_accounts e ON e.user_id=u.id WHERE s.token_hash=? AND s.expires_at>?',
                             (hashed(token),time.time())).fetchone()
         return dict(row) if row else None
+
+    def revoke_subject_sessions(self, subject):
+        """封面搭子账号已注销：删掉这个账号在本站的全部会话（所有设备）。账号和研究数据不删。返回删掉的会话数。"""
+        with self.connection(True) as c:
+            return c.execute('DELETE FROM sessions WHERE user_id IN (SELECT user_id FROM external_accounts WHERE subject=?)',(subject,)).rowcount
 
     def logout(self, token):
         with self.connection(True) as c: c.execute('DELETE FROM sessions WHERE token_hash=?', (hashed(token),))
@@ -203,25 +258,42 @@ class Database:
             count=c.execute("SELECT count(*) FROM jobs WHERE user_id=? AND mode='live' AND created_at>?",(user_id,time.time()-86400)).fetchone()[0]
         return max(0,self.settings.daily_user_jobs-count)
 
-    def enqueue(self, user_id, topic, focus, mode='live'):
+    def _admit(self, c, user_id, mode, now):
+        if c.execute("SELECT 1 FROM jobs WHERE user_id=? AND status IN ('queued','running')",(user_id,)).fetchone():
+            raise Conflict('你已经有一项研究进行中，可以先查看进度。')
+        if mode=='live':
+            total=c.execute("SELECT count(*) FROM jobs WHERE mode='live' AND created_at>?",(now-86400,)).fetchone()[0]
+            own=c.execute("SELECT count(*) FROM jobs WHERE user_id=? AND mode='live' AND created_at>?",(user_id,now-86400)).fetchone()[0]
+            if total>=self.settings.daily_live_jobs:raise Conflict('当前试用站的研究额度已用完，请稍后再来。')
+            if own>=self.settings.daily_user_jobs:raise Conflict('你近24小时的研究额度已用完。')
+
+    def admit(self, user_id, mode='live'):
+        """扣分前的预检，规则和入队完全相同；真正入队时还会在写事务里再查一遍。"""
+        with self.connection() as c: self._admit(c,user_id,mode,time.time())
+
+    def enqueue(self, user_id, topic, focus, mode='live', job_id=None, charged=None):
         if mode not in ('live','demo'):raise InvalidInput('Unknown research mode.')
-        now=time.time();job_id=uuid.uuid4().hex
+        now=time.time();job_id=job_id or uuid.uuid4().hex
         with self.connection(True) as c:
-            if c.execute("SELECT 1 FROM jobs WHERE user_id=? AND status IN ('queued','running')",(user_id,)).fetchone():
-                raise Conflict('你已经有一项研究进行中，可以先查看进度。')
-            if mode=='live':
-                total=c.execute("SELECT count(*) FROM jobs WHERE mode='live' AND created_at>?",(now-86400,)).fetchone()[0]
-                own=c.execute("SELECT count(*) FROM jobs WHERE user_id=? AND mode='live' AND created_at>?",(user_id,now-86400)).fetchone()[0]
-                if total>=self.settings.daily_live_jobs:raise Conflict('当前试用站的研究额度已用完，请稍后再来。')
-                if own>=self.settings.daily_user_jobs:raise Conflict('你近24小时的研究额度已用完。')
+            self._admit(c,user_id,mode,now)
             c.execute('INSERT INTO jobs(id,user_id,topic,focus,mode,status,message,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
                       (job_id,user_id,topic,focus,mode,'queued','已加入研究队列。',now,now))
             c.execute('INSERT INTO audit(at,user_id,action,job_id) VALUES (?,?,?,?)',(now,user_id,'create_job',job_id))
+            # 已经扣过分的真实研究：入队和“已扣”记账在同一个事务里，要么都成、要么都不成。charged 是这次扣分的编号。
+            if charged and c.execute("UPDATE credit_charges SET state='charged',updated_at=? WHERE reference=? AND job_id=? AND state='charging'",(now,charged,job_id)).rowcount!=1:
+                raise Conflict('积分记录对不上，这次研究没有开始。')
         return self.job(job_id,user_id)
 
-    def recover_interrupted(self):
+    def backfill_interrupted(self):
+        """回退到旧版（30540d8）期间被重启打断的研究只改了状态、没写结束时间，新版结算找不到它们。
+        启动时只给 status='interrupted' 且 finished_at 为空的补上 finished_at=updated_at，别的状态不碰。"""
         with self.connection(True) as c:
-            c.execute("UPDATE jobs SET status='interrupted',message='服务已恢复，已保存的数据仍在；可以继续整理报告。',updated_at=? WHERE status='running'",(time.time(),))
+            return c.execute("UPDATE jobs SET finished_at=updated_at WHERE status='interrupted' AND finished_at IS NULL").rowcount
+
+    def recover_interrupted(self):
+        # 记下结束时间：被重启打断的研究和出错、停止一样结算积分，没有产出任何结果就退（接续时还扣着的不另扣）。
+        with self.connection(True) as c:
+            c.execute("UPDATE jobs SET status='interrupted',message='服务已恢复，已保存的数据仍在；可以继续整理报告。',updated_at=?,finished_at=? WHERE status='running'",(time.time(),time.time()))
 
     def claim(self):
         with self.connection(True) as c:
@@ -251,7 +323,8 @@ class Database:
                 c.execute('UPDATE jobs SET cancel_requested=1 WHERE id=?',(job_id,))
         return self.job(job_id,user_id)
 
-    def resume(self, job_id, user_id, allow_completed_repair=False):
+    def resume(self, job_id, user_id, allow_completed_repair=False, charged=None):
+        now=time.time()
         with self.connection(True) as c:
             row=c.execute('SELECT * FROM jobs WHERE id=? AND user_id=?',(job_id,user_id)).fetchone()
             if not row:return None
@@ -259,5 +332,150 @@ class Database:
                 raise Conflict('这项研究当前不需要接续。')
             if c.execute("SELECT 1 FROM jobs WHERE user_id=? AND status IN ('queued','running')",(user_id,)).fetchone():
                 raise Conflict('请先等待当前研究结束。')
+            if charged:
+                # 这次接续刚扣的那笔：和排队放在同一个事务里记为已扣。
+                if c.execute("UPDATE credit_charges SET state='charged',updated_at=? WHERE reference=? AND job_id=? AND state='charging'",(now,charged,job_id)).rowcount!=1:
+                    raise Conflict('积分记录对不上，这次接续没有开始。')
+            else:
+                # 扣过分的研究不另扣分接续时，当前那笔必须还扣着；后台刚把它改成待退的话，这次不接续。
+                current=c.execute(CURRENT_CHARGE,(job_id,)).fetchone()
+                if current and current['state']!='charged':raise Conflict(SETTLING)
             c.execute("UPDATE jobs SET status='queued',message='已排队接续，只使用现有数据。',cancel_requested=0,resume_only=1,updated_at=? WHERE id=?",(time.time(),job_id))
         return self.job(job_id,user_id)
+
+    # ---- 封面搭子积分记账（按扣分编号 reference 记，一份研究可以有多笔） ----
+
+    def begin_charge(self, job_id, subject, amount, reference=None):
+        """开始研究扣分前先记一笔“扣分中”（reference 就是研究编号），进程中途中断也能查到、能退。"""
+        now=time.time()
+        with self.connection(True) as c:
+            try:
+                c.execute('INSERT INTO credit_charges(reference,job_id,subject,amount,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
+                          (reference or job_id,job_id,subject,amount,'charging',now,now))
+            except sqlite3.IntegrityError:
+                raise Conflict('积分记录对不上，这次没有开始。') from None
+
+    def credit_charge(self, job_id):
+        """这份研究当前那笔：最新的一笔，没扣成的尝试不算。"""
+        with self.connection() as c:
+            row=c.execute(CURRENT_CHARGE,(job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def credit_charges(self, job_id):
+        with self.connection() as c:
+            return [dict(row) for row in c.execute('SELECT * FROM credit_charges WHERE job_id=? ORDER BY rowid',(job_id,))]
+
+    def begin_resume_charge(self, job_id, subject, amount):
+        """退过分的研究再接续前，先记一笔新的“扣分中”，返回编号 <研究编号>-r1、-r2…（每次都不重复，符合封面搭子的
+        [A-Za-z0-9_.:-]{1,80}）。同一个写事务里确认当前那笔确实已退（或作废）、没有别的扣分在进行，
+        同时点两次接续也只会有一笔在扣。"""
+        now=time.time()
+        with self.connection(True) as c:
+            current=c.execute(CURRENT_CHARGE,(job_id,)).fetchone()
+            if not current or current['state'] not in ('refunded','void'):raise Conflict(SETTLING)
+            count=c.execute('SELECT count(*) FROM credit_charges WHERE job_id=?',(job_id,)).fetchone()[0]
+            reference=job_id+'-r'+str(count)
+            try:
+                c.execute('INSERT INTO credit_charges(reference,job_id,subject,amount,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
+                          (reference,job_id,subject,amount,'charging',now,now))
+            except sqlite3.IntegrityError:
+                raise Conflict('积分记录对不上，这次接续没有开始。') from None  # 只有手工删过记录才会撞号
+        return reference
+
+    def decline_charge(self, reference):
+        """封面搭子明确没扣（余额不足、编号已关闭、拒绝请求或根本没连上）。"""
+        with self.connection(True) as c:
+            c.execute("UPDATE credit_charges SET state='declined',updated_at=? WHERE reference=? AND state='charging'",(time.time(),reference))
+
+    def queue_refund(self, reference, states, delay=0):
+        """把处在 states 里的扣分记录改成待退；返回是否真的改到了。"""
+        now=time.time();marks=','.join('?'*len(states))
+        with self.connection(True) as c:
+            return c.execute('UPDATE credit_charges SET state=\'refund_pending\',next_attempt_at=?,updated_at=? WHERE reference=? AND state IN ('+marks+')',
+                             (now+delay,now,reference,*states)).rowcount==1
+
+    def queue_settle_refund(self, reference, finished_at):
+        """研究结束后没有产出任何结果：把还扣着的这笔改成待退。研究要是已经被接续（排队或运行中），或者接续后又结束过一次
+        （结束时间变了，那次要另行核对），就不动。这些条件和改状态在同一条 SQL 里，后台结算和用户点接续同时发生也不会让接续白跑。"""
+        now=time.time()
+        with self.connection(True) as c:
+            return c.execute("UPDATE credit_charges SET state='refund_pending',next_attempt_at=?,updated_at=? WHERE reference=? AND state='charged' "
+                             "AND EXISTS (SELECT 1 FROM jobs j WHERE j.id=credit_charges.job_id AND j.status NOT IN ('queued','running') AND j.finished_at=?)",
+                             (now,now,reference,finished_at)).rowcount==1
+
+    def claim_refund(self, reference, lease):
+        """领取一次退款尝试：到期的待退记录先顺延 lease 秒，免得两处同时去退。"""
+        now=time.time()
+        with self.connection(True) as c:
+            row=c.execute("SELECT * FROM credit_charges WHERE reference=? AND state='refund_pending' AND next_attempt_at<=?",(reference,now)).fetchone()
+            if not row:return None
+            c.execute('UPDATE credit_charges SET attempts=attempts+1,next_attempt_at=?,updated_at=? WHERE reference=?',(now+lease,now,reference))
+        return dict(row)
+
+    def finish_refund(self, reference):
+        with self.connection(True) as c:
+            c.execute("UPDATE credit_charges SET state='refunded',updated_at=? WHERE reference=? AND state='refund_pending'",(time.time(),reference))
+
+    def void_charge(self, reference):
+        """封面搭子账号已注销，这笔退不了：记为终态，不再重试。"""
+        with self.connection(True) as c:
+            c.execute("UPDATE credit_charges SET state='void',updated_at=? WHERE reference=? AND state='refund_pending'",(time.time(),reference))
+
+    def defer_charge(self, reference, seconds):
+        """这次没处理成，过 seconds 秒再试。"""
+        now=time.time()
+        with self.connection(True) as c:
+            c.execute('UPDATE credit_charges SET next_attempt_at=?,updated_at=? WHERE reference=?',(now+seconds,now,reference))
+
+    def mark_settled(self, reference):
+        """这笔已经交付过结果，记下核对时间：以后接续再结束也不退，只把核对时间往后记。"""
+        now=time.time()
+        with self.connection(True) as c:
+            c.execute("UPDATE credit_charges SET settled_at=?,updated_at=? WHERE reference=? AND state='charged'",(now,now,reference))
+
+    def unsettled_charges(self, limit=20):
+        """已扣分、研究已结束，但结束后还没核对过要不要退的研究编号（含当时核对出错、到点重试的）。"""
+        with self.connection() as c:
+            rows=c.execute("SELECT c.job_id FROM credit_charges c JOIN jobs j ON j.id=c.job_id WHERE c.state='charged' "
+                           "AND j.status NOT IN ('queued','running') AND j.finished_at IS NOT NULL "
+                           "AND (c.settled_at IS NULL OR c.settled_at<j.finished_at) AND c.next_attempt_at<=? LIMIT ?",
+                           (time.time(),limit)).fetchall()
+        return [row['job_id'] for row in rows]
+
+    def due_refunds(self, limit=20):
+        """到点该退的扣分编号。"""
+        now=time.time()
+        with self.connection() as c:
+            stale=c.execute("SELECT 1 FROM credit_charges WHERE state='charging' AND created_at<? LIMIT 1",(now-STALE_CHARGE_SECONDS,)).fetchone()
+        if stale:
+            # 扣分请求发出后进程中断：结果不明，一律去退（没扣成的编号退款时封面搭子会答“没有可退的”，并关掉这个编号）。
+            with self.connection(True) as c:
+                c.execute("UPDATE credit_charges SET state='refund_pending',next_attempt_at=?,updated_at=? WHERE state='charging' AND created_at<?",
+                          (now,now,now-STALE_CHARGE_SECONDS))
+        with self.connection() as c:
+            rows=c.execute("SELECT reference FROM credit_charges WHERE state='refund_pending' AND next_attempt_at<=? ORDER BY next_attempt_at LIMIT ?",
+                           (now,limit)).fetchall()
+        return [row['reference'] for row in rows]
+
+    # ---- 服务器维护命令用 ----
+
+    def fm_accounts(self):
+        """封面搭子账号对应的本站用户；不取 subject。"""
+        with self.connection() as c:
+            rows=c.execute("SELECT u.id,u.created_at,u.role,"
+                           "(SELECT max(a.at) FROM audit a WHERE a.user_id=u.id AND a.action='fm_login') AS last_login,"
+                           "(SELECT count(*) FROM jobs j WHERE j.user_id=u.id) AS jobs "
+                           "FROM external_accounts e JOIN users u ON u.id=e.user_id ORDER BY u.created_at").fetchall()
+        return [dict(row) for row in rows]
+
+    def set_role(self, user_id, role):
+        """设或撤管理员并写审计；只能给绑定了封面搭子的账号设管理员。返回角色是否真的变了。"""
+        if role not in ('admin','member'):raise InvalidInput('Unknown role.')
+        with self.connection(True) as c:
+            row=c.execute('SELECT u.role,e.user_id IS NOT NULL AS linked FROM users u LEFT JOIN external_accounts e ON e.user_id=u.id WHERE u.id=?',(user_id,)).fetchone()
+            if not row:raise InvalidInput('没有找到这个用户编号。')
+            if role=='admin' and not row['linked']:raise InvalidInput('只能给用封面搭子手机号登录过的账号设管理员；旧的用户名密码账号已停用。')
+            if row['role']==role:return False
+            c.execute('UPDATE users SET role=? WHERE id=?',(role,user_id))
+            c.execute('INSERT INTO audit(at,user_id,action) VALUES (?,?,?)',(time.time(),user_id,'grant_admin' if role=='admin' else 'revoke_admin'))
+        return True

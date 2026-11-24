@@ -57,8 +57,8 @@ class HostedSession(Session):
 
 
 class Worker:
-    def __init__(self,settings,db,vault):
-        self.settings,self.db,self.vault=settings,db,vault
+    def __init__(self,settings,db,vault,credits=None):
+        self.settings,self.db,self.vault,self.credits=settings,db,vault,credits
         self.stop=threading.Event();self.current={};self.lock=threading.Lock();self.thread=None;self.lease=None
     def start(self):
         self.lease=(self.settings.data_dir/'worker.lock').open('a')
@@ -67,6 +67,7 @@ class Worker:
             self.lease.close();raise RuntimeError('Another worker owns this database.') from None
         from webapp.cached_analysis import recover_publications
         recover_publications(self.settings.data_dir)
+        self.db.backfill_interrupted()
         self.db.recover_interrupted()
         self.thread=threading.Thread(target=self.loop,name='research-worker',daemon=True);self.thread.start()
     def close(self):
@@ -90,7 +91,9 @@ class Worker:
                     self.db.recover_interrupted();recover=False
                 job=self.db.claim()
                 if job:self.execute(job)
-                else:self.stop.wait(.5)
+                else:
+                    self.settle_credits()
+                    self.stop.wait(.5)
             except Exception:
                 # Never include provider bodies or credentials in service logs.
                 logging.getLogger(__name__).error('Worker interrupted; preserving jobs for cached recovery.')
@@ -149,3 +152,12 @@ class Worker:
             self.db.finish(job['id'],status,message,public_progress(session) if session else {})
         finally:
             with self.lock:self.current.pop(job['id'],None)
+        self.settle_credits(job['id'])
+    def settle_credits(self,job_id=None):
+        """研究结束后核对积分（没有产出任何结果就退回）；空闲时补退之前没退成的。出错不影响研究队列，下一轮再试。"""
+        if not self.credits:return
+        try:
+            if job_id:self.credits.settle(job_id)
+            else:self.credits.retry_due()
+        except Exception:
+            logging.getLogger(__name__).error('积分结算暂未完成，后台循环会再试。')
