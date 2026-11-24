@@ -1,6 +1,6 @@
 # 网站部署与维护
 
-网站为试用版本，入口 `https://breakout.zmtgzt.com`。2026-10-11用户要求取消普通注册的邀请码门槛，现支持用户名、密码直接注册；不提供支付功能。普通用户的报告、数据和下载按账号隔离；管理员管理后台服务配置，不能通过网页读取其他用户的研究。
+网站为试用版本，入口 `https://breakout.zmtgzt.com`。2026-11-24 起只能用封面搭子（`https://fm.zmtgzt.com`）的手机号账号登录，新手机号登录即注册；用户名、密码注册和登录已停用，真实研究按次扣封面搭子积分，充值统一去封面搭子（见下文“封面搭子账号登录与积分”）。普通用户的报告、数据和下载按账号隔离；管理员管理后台服务配置，不能通过网页读取其他用户的研究。
 
 ## 运行位置
 
@@ -16,7 +16,7 @@
 
 先完成受影响检查、前端类型检查和独立审查，记录确定的 Git 提交。将该提交的 `git archive` 放入对应发布目录，使用 `sudo bash <release>/deploy/install-release.sh <release>` 安装。脚本只更改本项目文件；失败恢复旧版本、旧服务配置及旧Caddy站点，保留数据和主密钥。回滚不执行数据库逆迁移；当前仅有初始schema版本1，未来迁移另行授权。
 
-首次管理员通过 `python -m webapp.manage bootstrap` 生成48小时一次性邀请，使用服务用户及同一私密环境执行。已有管理员时拒绝再次bootstrap；旧邀请维护命令 `python -m webapp.manage invite` 暂留兼容；普通用户无需邀请码。邀请不可写进公开仓库或访问日志，页面读取后立即从地址栏移除。
+首次管理员通过 `python -m webapp.manage bootstrap` 生成48小时一次性邀请，使用服务用户及同一私密环境执行。已有管理员时拒绝再次bootstrap；旧邀请维护命令 `python -m webapp.manage invite` 暂留兼容；普通用户无需邀请码。邀请不可写进公开仓库或访问日志，页面读取后立即从地址栏移除。2026-11-24 起网页不再接受注册，这两条命令生成的邀请链接已无法使用；改用封面搭子登录后怎么指定管理员，待负责人决定。
 
 ### 公开示例报告（/sample，2026-11-24）
 
@@ -32,6 +32,46 @@ sudo install -o breakout -g breakout -m 600 /var/lib/douyin-breakout/runs/<研�
 2026-11-24 选用的是 2026-10-10“AI自媒体”那份精编报告（3 条精选案例，封面内嵌在页面里）。换一份时同样只选精编版，页面上的说明文字没有写死主题。
 
 `deploy/import-approved-providers.py` 是本次获授权的服务器内一次性导入工具，只读取 topic-remix `.env.local` 中两项服务配置（TikHub 可引用它指定的 Key 文件），不移动源文件，不读其他服务凭证，不打印值。今后使用须重新确认新增用途是否已授权。网页管理员可在管理页自行更换独立配置。
+
+### 封面搭子账号登录与积分（2026-11-24）
+
+登录流程：首页“用手机号登录 / 注册”指向 `/auth/start`，网站生成一次性 state，放进 10 分钟有效、HttpOnly、SameSite=Lax 的签名 cookie（正式环境名为 `__Host-breakout_auth`，带 Secure），再跳到 `https://fm.zmtgzt.com/connect/authorize`（`client_id=breakout`，`redirect_uri=https://breakout.zmtgzt.com/auth/callback`）。用户在封面搭子确认后回到 `/auth/callback`：网站核对 state（常量时间比较，同一个 state 只能用一次），服务器用接入密钥向封面搭子换取账号标识 subject（10 秒超时），找到或新建本地用户，沿用原有会话 cookie 和 CSRF 机制，再回到首页。授权回调按来源限流（15 分钟 20 次）。出错时页面只显示人话说明，不带封面搭子的回应细节；服务日志记一条警告，写明接口名、HTTP 状态码和封面搭子的错误码（例如 `401 invalid_client` 表示接入密钥不对，`400 invalid_grant` 表示授权码无效），不记密钥和 subject。本站拿不到、也不保存手机号；退出只清本站会话，不会退出封面搭子。
+
+数据库只新增两张表，不改原有表，`schema_version` 仍为 1，不需要迁移命令：
+
+- `external_accounts(subject, user_id, created_at)`：封面搭子账号与本站用户一一对应。新用户在 `users` 里插一行，用户名为 `fm:` 加随机用户编号的前 16 位，不从 subject 推出（旧用户名不允许冒号，不会撞名），`password_hash` 是一个任何密码都比对不上的值。
+- `credit_charges(job_id, subject, reference, amount, state, attempts, next_attempt_at, settled_at, created_at, updated_at)`：每次真实研究的扣分记录，reference 就是研究编号。状态：`charging` 已发出扣分请求、`charged` 已扣并入队、`declined` 确认没扣成、`refund_pending` 待退、`refunded` 封面搭子确认这笔不再扣着。
+
+积分规则：
+
+- 只有真实研究扣分，默认每次 5 分（`BREAKOUT_RESEARCH_CREDITS`）；合成示例和接续不扣分。
+- 先做原有全部检查，包括每日额度（全站 2 次、每人 2 次）和“已有研究进行中”的预检，额度够了才扣分；扣分成功后入队，入队时在同一事务里再按原规则检查一遍，并把记录改成 `charged`。入队没成功（例如预检后额度被别的请求占了）就马上退分。
+- 积分不够时返回 402，页面说明还剩几分并给出充值链接。封面搭子连不上时返回 503，不入队；如果扣分请求已经发出、只是回应丢了，记为待退，60 秒后由后台去退。
+- 研究结束时，若按网页上的判定没有可用报告（状态不是 done/report_ready，也没有能读的报告）就退分。出错、用户停止、排队中被取消、服务重启打断（“可以接续”）都算结束；之后接续不再扣分，接续结束时如果还没有可用报告也不会重复退。
+- 退款失败的记录保持 `refund_pending`，后台任务空闲时按 30 秒起、逐次翻倍、最长 1 小时的间隔重试，不会丢；封面搭子一次没退成就先停这一轮，不连续等超时、不拖住排队的研究。扣分请求发出后进程中断、超过 2 分钟仍停在 `charging` 的记录，也由后台按待退处理（对没扣成的记录，封面搭子会答“没有可退的”）。
+- 首页接口 `/api/bootstrap` 返回当前积分（按用户缓存 30 秒，查询超时 3 秒）；查不到时为 null，页面照常显示。
+
+停用旧账号：原有 3 个用户名密码账号不能再登录，`/api/register`、`/api/login` 返回 410“已改为手机号登录”；会话只认绑定了封面搭子账号的用户，旧账号即使还有未过期的会话也立即失效。旧账号和 7 份旧研究的数据都留在库里，不删除，但网页上已没有入口能看到。以前的管理员只能经邀请注册，也是用户名密码账号，同样停用；封面搭子登录只建普通成员，所以网页管理页暂时没人能进（TikHub、DeepSeek 的服务配置仍在，研究照常进行）。
+
+新增环境变量（写在 `/etc/douyin-breakout.env`）：
+
+- `BREAKOUT_FM_CLIENT_SECRET`：必填，封面搭子给小号爆款的接入密钥，16–256 个可见 ASCII 字符。正式环境没配置时服务启动即报错；开发模式（`BREAKOUT_DEV_MODE=1`）没配置时自动用假值，只能连本机假服务。
+- `BREAKOUT_FM_BASE`：选填，默认 `https://fm.zmtgzt.com`，只能写网站根地址；正式环境必须是 HTTPS。
+- `BREAKOUT_RESEARCH_CREDITS`：选填，默认 5，一次真实研究扣多少积分，允许 1–100。
+
+上线步骤：
+
+1. 确认封面搭子已上线 `/connect/authorize` 和 `/api/connect/*` 接口，并为 `client_id=breakout` 登记了回调地址 `https://breakout.zmtgzt.com/auth/callback`；接入密钥通过私密渠道交接，不写进仓库、聊天记录或日志。
+2. 先在服务器配置密钥，再发布代码：用 `sudoedit /etc/douyin-breakout.env` 加一行 `BREAKOUT_FM_CLIENT_SECRET=…`，保持文件 root 所有、权限 600。当前线上版本不读这个变量，先加不影响服务。
+3. 按上面的“发布”流程安装新版本。新版本启动时缺这项配置会直接报错，`install-release.sh` 的健康检查失败后会自动恢复旧版本。全新安装时脚本生成的环境文件里没有这一项，需要先补上再启动。
+4. 上线后验证：未登录首页只剩“用手机号登录 / 注册”按钮和示例报告入口；点登录跳到封面搭子，确认后回到首页，顶栏显示“积分 N · 充值”；`/api/register`、`/api/login` 返回 410。真实研究扣分会产生 TikHub、DeepSeek 费用，须按明确授权的次数验收。
+
+回退：按原流程重新安装上一个发布目录即可。新增的两张表留在库里，旧代码不读，不需要逆迁移。回退后旧的用户名密码账号恢复可登录（它们没过期的旧会话也会重新生效）。封面搭子登录建立的账号没有密码，不能重新登录；但旧代码查会话时不看 `external_accounts`，他们已有的会话仍然有效，在旧代码下跑真实研究不扣分（仍受每日次数限制）。所以回退时要同时做两件事：
+
+1. 用服务用户清掉封面搭子用户的会话：`DELETE FROM sessions WHERE user_id IN (SELECT user_id FROM external_accounts);`（只删会话，不动账号和研究；这是生产数据写入，按授权执行）。
+2. 回退前先查积分记录：`credit_charges` 里 `state` 为 `charging`、`refund_pending` 的，以及 `state='charged'` 但对应研究还没结束或结束后还没核对（`settled_at` 为空或早于研究的 `finished_at`）的。旧代码不会去结算这些分：要么尽快重新上新版由后台继续处理，要么记下研究编号请封面搭子人工退回。
+
+`deploy/import-approved-providers.py` 只从环境文件里挑原来的 5 个变量，新版上线后它读配置时会因为缺 `BREAKOUT_FM_CLIENT_SECRET` 报错退出（报错前不写任何东西）。网页管理页暂时没人能进，以后要换 TikHub、DeepSeek 密钥，需要先改这个工具的允许列表或另定管理员，属于部署工具改动，须另行授权。
 
 ## 任务与费用
 
@@ -51,7 +91,7 @@ DeepSeek采用2026-11-24重新核对的flash高峰缓存未命中报价（与202
 
 - `python3 -B -m unittest discover -s webapp/tests -v`：登录/CSRF、隔离、并发配额、任务生命周期、模型账本、合成报告完整性。
 - `tsc -p webapp/tsconfig.json`（TypeScript 5.9.3）：浏览器脚本严格类型检查；无需构建前端。
-- `tests/browser_web.py`：真实本地浏览器注册、合成研究、自动正文跳转、手机页面、历史、退出与重新登录。使用独立临时数据目录，不能指向生产。
+- `tests/browser_web.py`：真实本地浏览器走封面搭子登录（本机假服务，不连真实封面搭子）、合成研究、自动正文跳转、手机页面、历史、退出与重新登录。使用独立临时数据目录，不能指向生产。
 - 现有研究模块检查按改动选择；真实线上验收须有明确次数与费用授权。
 - 公网 `/health` 检查服务及后台线程，异常时503。研究完成前仍执行磁盘与报告独立核对，非PASS不会标记done。
 

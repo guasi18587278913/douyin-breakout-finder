@@ -3,13 +3,14 @@ from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
+import uuid
 from urllib.parse import urlsplit
-from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -18,16 +19,15 @@ from webapp.settings import Settings
 from webapp.db import Database, Conflict, InvalidInput
 from webapp.vault import Secrets
 from webapp.engine import Worker, ROOT, run_dir
+from webapp.credits import Credits, FmClient, FmRejected, FmUnavailable, InsufficientCredits, CODE, STATE
 from core import StopRun
 from product import simple_brief
 
+STATE_SECONDS=600  # 封面搭子登录跳转用的 state 有效期
+PHONE_LOGIN='已改为手机号登录，请刷新页面后重新登录。'
+
 class Body(BaseModel):
     model_config=ConfigDict(extra='forbid')
-class Login(Body):
-    username:str=Field(min_length=2,max_length=40)
-    password:str=Field(min_length=10,max_length=128)
-class Register(Login):
-    invitation:Optional[str]=Field(default=None,min_length=30,max_length=100)
 class Research(Body):
     topic:str=Field(min_length=1,max_length=500)
     focus:str='all'
@@ -39,12 +39,26 @@ class Configure(Body):
     deepseek_key:str=Field(default='',max_length=500)
 
 
-def create_app(settings=None):
+def create_app(settings=None,fm_transport=None):
     settings=settings or Settings.from_env()
-    db=Database(settings);vault=Secrets(settings);worker=Worker(settings,db,vault)
+    db=Database(settings);vault=Secrets(settings);fm=FmClient(settings,fm_transport)
+    # delivered 用到下面定义的 public_job：研究是否已有可用报告，以网页显示的结论为准。
+    credits=Credits(settings,db,fm,lambda job:delivered(job))
+    worker=Worker(settings,db,vault,credits)
     cookie='breakout_session' if settings.dev else '__Host-breakout_session'
     anon='breakout_csrf' if settings.dev else '__Host-breakout_csrf'
+    state_cookie='breakout_auth' if settings.dev else '__Host-breakout_auth'
     def sign(value):return hmac.new(settings.master_key.encode(),value.encode(),hashlib.sha256).hexdigest()
+    def state_token(state):
+        payload=state+'.'+str(int(time.time()))
+        return payload+'.'+sign('fm-state:'+payload)
+    def read_state(value):
+        """核对签名和有效期，返回 cookie 里的 state；不对就返回 None。"""
+        try:
+            state,issued,sig=value.split('.')
+            fresh=0<=time.time()-int(issued)<STATE_SECONDS
+            return state if fresh and hmac.compare_digest(sign('fm-state:'+state+'.'+issued),sig) else None
+        except (ValueError,TypeError,AttributeError):return None
     def anonymous_token():
         value=str(int(time.time()))+'.'+secrets.token_urlsafe(24)
         return value+'.'+sign(value)
@@ -83,23 +97,37 @@ def create_app(settings=None):
                 'progress':json.loads(job['progress_json']),
                 'report_url':'/reports/'+job['id']+'/report.html' if (folder/'report.html').is_file() else None,
                 'can_resume':not blocked and job['mode']=='live' and status in ('interrupted','error','needs_analysis','cancelled') and (folder/'state.json').is_file()}
+    def delivered(job):
+        """研究是否已有可用报告：网页显示为 done/report_ready，或已有能读的报告。都不是就该退分。"""
+        view=public_job(job)
+        return view['status'] in ('done','report_ready') or view['report_ready']
     def limit(request,bucket,count,seconds):
         address=request.client.host if request.client else 'unknown'
         if not db.allow(bucket+':'+hashlib.sha256(address.encode()).hexdigest(),count,seconds):
             raise HTTPException(429,'操作太频繁，请稍后再试。')
-    def session_response(user):
-        token,csrf=db.create_session(user['id'])
-        response=JSONResponse({'user':user,'csrf':csrf})
+    def start_session(response,user_id):
+        token,_=db.create_session(user_id)
         response.set_cookie(cookie,token,max_age=settings.session_days*86400,secure=not settings.dev,httponly=True,samesite='strict',path='/')
         response.delete_cookie(anon,path='/',secure=not settings.dev,httponly=True,samesite='strict')
         return response
+    def forget_state(response):
+        response.delete_cookie(state_cookie,path='/',secure=not settings.dev,httponly=True,samesite='lax')
+        return response
+    def login_failed(reason,status):
+        # reason 只用下面写死的几句话，不带出封面搭子的回应细节。
+        page=('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+              '<title>登录没有完成 · 小号爆款</title><link rel="stylesheet" href="/static/site.css"></head><body><main>'
+              '<section class="paper auth-card login-failed"><p class="eyebrow">封面搭子账号登录</p><h2>登录没有完成</h2>'
+              '<p class="muted">'+reason+'</p><div class="actions"><a class="primary" href="/auth/start">重新登录 →</a>'
+              '<a class="text-button" href="/">返回首页</a></div></section></main></body></html>')
+        return forget_state(HTMLResponse(page,status))
     @asynccontextmanager
     async def lifespan(app):
         if settings.worker_enabled:worker.start()
         yield
         if settings.worker_enabled:worker.close()
     app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
-    app.state.db=db;app.state.vault=vault;app.state.worker=worker;app.state.settings=settings
+    app.state.db=db;app.state.vault=vault;app.state.worker=worker;app.state.settings=settings;app.state.credits=credits
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=[urlsplit(settings.public_url).hostname])
     @app.middleware('http')
     async def protect(request,call_next):
@@ -154,21 +182,43 @@ def create_app(settings=None):
         token=session['csrf'] if session else anonymous_token()
         user={'id':session['user_id'],'username':session['username'],'role':session['role']} if session else None
         status=vault.status()
-        response=JSONResponse({'user':user,'csrf':token,'ready':all(status.values()),'remaining':db.remaining(user['id']) if user else None})
+        # 积分从封面搭子查，按用户缓存 30 秒；查不到时为 null，页面照常显示。
+        response=JSONResponse({'user':user,'csrf':token,'ready':all(status.values()),'remaining':db.remaining(user['id']) if user else None,
+                               'credits':credits.balance(session['subject']) if session else None,
+                               'research_credits':settings.research_credits,'recharge_url':credits.recharge_url})
         if not session:response.set_cookie(anon,token,max_age=3600,secure=not settings.dev,httponly=True,samesite='strict',path='/')
         return response
+    # 旧的用户名密码注册、登录已停用；旧账号和研究数据留在库里，不删除。
     @app.post('/api/register')
-    def register(request:Request,body:Register):
-        limit(request,'register',8,900)
-        user=(db.register_public(body.username,body.password) if body.invitation is None
-              else db.register(body.invitation,body.username,body.password))
-        return session_response(user)
+    def register():raise HTTPException(410,PHONE_LOGIN)
     @app.post('/api/login')
-    def login(request:Request,body:Login):
-        limit(request,'login',10,900)
-        user=db.login(body.username,body.password)
-        if not user:raise HTTPException(401,'用户名或密码不正确。')
-        return session_response(user)
+    def login():raise HTTPException(410,PHONE_LOGIN)
+    @app.get('/auth/start')
+    def auth_start():
+        """跳到封面搭子授权：state 放进 10 分钟有效的签名 cookie，回来时核对。"""
+        state=secrets.token_urlsafe(32)
+        response=RedirectResponse(fm.authorize_url(state),302)
+        response.set_cookie(state_cookie,state_token(state),max_age=STATE_SECONDS,secure=not settings.dev,httponly=True,samesite='lax',path='/')
+        return response
+    @app.get('/auth/callback')
+    def auth_callback(request:Request,code:str='',state:str=''):
+        try:limit(request,'fm-login',20,900)
+        except HTTPException:return login_failed('登录太频繁，请过几分钟再试。',429)
+        expected=read_state(request.cookies.get(state_cookie,''))
+        # 先确认格式（compare_digest 只收 ASCII），再做常量时间比较。
+        if not expected or not STATE.fullmatch(state) or not hmac.compare_digest(expected,state):
+            return login_failed('这次登录已经过期或不是从本站发起的，请重新登录。',400)
+        # 同一个 state 只能用一次：用过的在有效期内记一笔，重放直接拒绝。
+        if not db.allow('fm-state:'+hashlib.sha256(state.encode()).hexdigest(),1,STATE_SECONDS):
+            return login_failed('这个登录链接已经用过了，请重新登录。',400)
+        if not CODE.fullmatch(code):
+            return login_failed('封面搭子那边没有完成授权，请重新登录。',400)
+        try:subject=fm.exchange(code)
+        except (FmRejected,FmUnavailable) as error:
+            if isinstance(error,FmRejected) and error.status==400:return login_failed('授权已过期或已经用过，请重新登录。',400)
+            return login_failed('暂时连不上封面搭子，请稍后再试。',503)
+        user=db.external_user(subject)
+        return forget_state(start_session(RedirectResponse('/',302),user['id']))
     @app.post('/api/logout')
     def logout(request:Request):
         auth(request);db.logout(request.cookies[cookie]);response=JSONResponse({'ok':True})
@@ -182,12 +232,36 @@ def create_app(settings=None):
         if body.mode not in ('live','demo'):raise HTTPException(400,'请选择真实研究或合成示例。')
         simple_brief({'description':body.topic,'focus':body.focus})
         if body.mode=='live' and not all(vault.status().values()):raise HTTPException(409,'研究服务尚未配置完成，请联系管理员。')
-        return public_job(db.enqueue(user['user_id'],body.topic.strip(),body.focus,body.mode))
+        if body.mode=='demo':return public_job(db.enqueue(user['user_id'],body.topic.strip(),body.focus,'demo'))
+        # 真实研究：先按入队规则预检每日额度，够了再扣分，免得扣了分却排不上。
+        db.admit(user['user_id'],'live')
+        job_id=uuid.uuid4().hex
+        try:credits.charge(user['subject'],job_id)
+        except InsufficientCredits as error:
+            balance='' if error.balance is None else f'，你现在有 {error.balance} 分'
+            return JSONResponse({'detail':f'积分不够：跑一次真实研究要 {settings.research_credits} 积分{balance}。请先去封面搭子充值。',
+                                 'balance':error.balance,'cost':settings.research_credits,'recharge_url':error.recharge_url or credits.recharge_url},402)
+        except (FmUnavailable,FmRejected):
+            raise HTTPException(503,'暂时连不上封面搭子的积分服务，研究没有开始；万一已经扣了分，会自动退回。请稍后再试。') from None
+        try:job=db.enqueue(user['user_id'],body.topic.strip(),body.focus,'live',job_id=job_id,charged=True)
+        except Exception as error:
+            # 没入队（例如预检之后额度被别的请求占了）就马上退分；退不成的记为待退，由后台重试。
+            try:refunded=credits.refund_now(job_id,('charging',))
+            except Exception:
+                refunded=False
+                logging.getLogger(__name__).error('入队失败后的积分退回暂未完成，后台循环会再试。')
+            if isinstance(error,Conflict):
+                raise Conflict(str(error)+('刚才扣的积分已经退回。' if refunded else '刚才扣的积分会自动退回。')) from None
+            raise
+        return public_job(job)
     @app.get('/api/jobs/{job_id}')
     def job(request:Request,job_id:str):return public_job(own(request,job_id))
     @app.post('/api/jobs/{job_id}/cancel')
     def cancel(request:Request,job_id:str):
         job=own(request,job_id);db.cancel(job_id,job['user_id']);worker.cancel(job_id)
+        # 排队时就被取消的真实研究不会再跑：没有报告，退回积分。正在跑的等研究收尾后由后台结算。
+        try:credits.settle(job_id)
+        except Exception:logging.getLogger(__name__).error('取消研究后的积分结算暂未完成，后台循环会再试。')
         return public_job(db.job(job_id,job['user_id']))
     @app.post('/api/jobs/{job_id}/resume',status_code=202)
     def resume(request:Request,job_id:str):

@@ -1,15 +1,19 @@
-"""Hosted UI counterexamples against a local app; synthetic fixtures, no providers."""
+"""Hosted UI counterexamples against a local app; synthetic fixtures, no providers.
+
+登录走本机起的假封面搭子（webapp/tests/fake_fm.py），不连真实的封面搭子。"""
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
+from urllib.parse import urlsplit
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path[:0]=[str(ROOT),str(ROOT/'scripts')]
+sys.path[:0]=[str(ROOT),str(ROOT/'scripts'),str(ROOT/'webapp/tests')]
 URL='http://127.0.0.1:8892'
 
 
@@ -18,9 +22,14 @@ def serve():
     from cryptography.fernet import Fernet
     from webapp.settings import Settings
     from webapp.app import create_app
+    from fake_fm import FakeFm
     settings=Settings(Path(os.environ['BREAKOUT_COMPLETION_TEST_DIR']),URL,Fernet.generate_key().decode(),
-                      dev=True,worker_enabled=False)
-    uvicorn.run(create_app(settings),host='127.0.0.1',port=8892,log_level='warning',access_log=False)
+                      dev=True,worker_enabled=False,fm_base=os.environ['BREAKOUT_COMPLETION_FM_URL'])
+    # 新用户 0 积分，用来看积分不够时的提示。后台任务关着、服务配置是假的，真实研究不会被执行。
+    FakeFm(settings.fm_client_secret,start_balance=0).serve(urlsplit(settings.fm_base).port)
+    app=create_app(settings)
+    app.state.vault.update({'tikhub_key':'synthetic-not-a-real-key','deepseek_key':'synthetic-not-a-real-key'})
+    uvicorn.run(app,host='127.0.0.1',port=8892,log_level='warning',access_log=False)
 
 
 def test():
@@ -38,8 +47,11 @@ def test():
         checks.append(name)
     with tempfile.TemporaryDirectory() as temporary:
         directory=Path(temporary)
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1',0));fm_port=sock.getsockname()[1]
         process=subprocess.Popen([sys.executable,__file__,'serve'],cwd=ROOT,
-                                 env={**os.environ,'BREAKOUT_COMPLETION_TEST_DIR':temporary})
+                                 env={**os.environ,'BREAKOUT_COMPLETION_TEST_DIR':temporary,
+                                      'BREAKOUT_COMPLETION_FM_URL':'http://127.0.0.1:'+str(fm_port)})
         try:
             deadline=time.monotonic()+20
             while time.monotonic()<deadline:
@@ -52,12 +64,19 @@ def test():
                 browser=p.chromium.launch(headless=True)
                 page=browser.new_page(viewport={'width':1365,'height':1000});errors=[]
                 page.on('pageerror',lambda error:errors.append(str(error)))
-                page.goto(URL);page.locator('#auth-switch').click()
-                page.get_by_label('用户名',exact=True).fill('completion-browser')
-                page.get_by_label('密码',exact=True).fill('Synthetic-browser-password-2026')
-                page.get_by_role('button',name='创建账号 →',exact=True).click()
+                page.goto(URL);page.get_by_role('link',name='用手机号登录 / 注册 →',exact=True).click()
                 page.get_by_role('heading',name='小号爆款',exact=True).wait_for()
                 user=page.request.get(URL+'/api/bootstrap').json()['user']
+                hint=page.locator('#credit-hint')
+                check('low credits explained before starting',hint.is_visible() and '你现在有 0 分' in hint.inner_text())
+                page.locator('#topic').fill('合成反例：积分不够')
+                with page.expect_response(lambda r:r.url.endswith('/api/jobs') and r.request.method=='POST') as answer:
+                    page.locator('#research-submit').click()
+                check('insufficient credits refused without a job',answer.value.status==402 and db.jobs(user['id'])==[])
+                link=hint.locator('a.recharge-link')
+                check('shortage shows recharge link',hint.is_visible() and link.get_attribute('target')=='_blank'
+                      and (link.get_attribute('href') or '').startswith('https://fm.zmtgzt.com/'))
+                page.screenshot(path=str(out/'low-credits-desktop.png'),full_page=True)
                 ready=db.enqueue(user['id'],'合成反例：有报告但不足目标','all','live')
                 run_demo(run_dir(settings,ready['id']),selection=True)
                 db.finish(ready['id'],'done','研究已完成',{})
