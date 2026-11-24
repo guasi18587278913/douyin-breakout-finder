@@ -126,6 +126,20 @@ def test():
                       and resume_hint.locator('a.recharge-link').get_attribute('href')==fm_base+'/#/me/recharge'
                       and db.job(stopped['id'])['status']=='cancelled')
                 page.screenshot(path=str(out/'resume-cost-desktop.png'),full_page=True)
+                # 页面写着“接续不另扣”之后，后台把这笔退了（这里直接改库模拟）：点接续时不扣分，页面刷新成要用 5 积分
+                stale=db.enqueue(user['id'],'合成反例：提示过期','all','live')
+                db.begin_charge(stale['id'],'0'*64,5)
+                with db.connection(True) as c:c.execute("UPDATE credit_charges SET state='charged' WHERE reference=?",(stale['id'],))
+                folder=run_dir(settings,stale['id']);folder.mkdir(parents=True);(folder/'state.json').write_text('{}')
+                db.finish(stale['id'],'error','本轮研究暂时中断。',{})
+                page.goto(URL+'/#job='+stale['id']);page.locator('#resume-job').wait_for(state='visible')
+                page.get_by_text('接续不另扣积分',exact=True).wait_for()
+                with db.connection(True) as c:c.execute("UPDATE credit_charges SET state='refunded' WHERE reference=?",(stale['id'],))
+                with page.expect_response(lambda r:r.url.endswith('/resume') and r.request.method=='POST') as answer:
+                    page.locator('#resume-job').click()
+                page.get_by_text('这次接续会用 5 积分',exact=True).wait_for()
+                check('stale free price refused and refreshed',answer.value.status==409 and '需要用 5 积分' in page.locator('#notice').inner_text()
+                      and len(db.credit_charges(stale['id']))==1 and db.job(stale['id'])['status']=='error')
                 check('no browser script errors',not errors)
                 browser.close()
             result={'source_commit':os.getenv('ACCEPTANCE_SHA') or os.getenv('GITHUB_SHA','local'),

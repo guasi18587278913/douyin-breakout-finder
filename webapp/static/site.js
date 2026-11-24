@@ -95,7 +95,10 @@ click('cancel-job',async()=>{if(current){const id=current.id,version=navigationV
 click('resume-job',async()=>{if(current){const id=current.id,version=navigationVersion,price=current.resume_credits||0;let job;
  try{job=await api('/api/jobs/'+id+'/resume','POST',{credits:price});}catch(error){
   if(error instanceof ApiError&&error.status===402){text('resume-hint-text',shortageFrom(error));show('resume-hint',true);return;}
-  if(error instanceof ApiError&&error.status===409){const fresh=await api('/api/jobs/'+id);if(version===navigationVersion&&current?.id===id){current=fresh;renderJob(fresh);}}
+  if(error instanceof ApiError&&error.status===409){
+   // 刷新失败（断网、登录过期）时仍显示原来的 409 提示；刷新成功就恢复轮询，研究若已被别处接续会继续更新。
+   try{const fresh=await api('/api/jobs/'+id);if(version===navigationVersion&&current?.id===id){current=fresh;renderJob(fresh);schedule();}}catch(refreshError){}
+  }
   throw error;}
  if(price>0&&credits!==null){credits=Math.max(0,credits-price);renderCredits();}show('resume-hint',false);if(version!==navigationVersion||current?.id!==id)return;current=job;autoOpen=job.id;renderJob(job);schedule();}});
 document.querySelectorAll('[data-topic]').forEach(button=>button.addEventListener('click',()=>{/** @type {HTMLTextAreaElement} */(el('topic')).value=/** @type {HTMLElement} */(button).dataset.topic||'';el('topic').focus();}));
