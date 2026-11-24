@@ -48,7 +48,7 @@ def test():
             check('phone login shown',login.is_visible())
             check('no password form',page.locator('#auth-view input').count()==0)
             intro=page.locator('#auth-view').inner_text()
-            check('login explains credits','使用封面搭子账号登录' in intro and '新用户送 10 积分' in intro and '跑一次真实研究用 5 积分' in intro)
+            check('login explains credits','使用封面搭子账号登录' in intro and '新用户送 10 积分' in intro and '跑一次真实研究用 5 积分' in intro and '研究没有产出任何结果才退回积分' in intro)
             check('no invitation requested','邀请码' not in intro)
             check('sample report entry kept',page.get_by_role('link',name='先看一份真实报告 →',exact=True).is_visible())
             page.screenshot(path=str(out/'login-desktop.png'),full_page=True)

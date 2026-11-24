@@ -39,6 +39,10 @@ class FmRejected(Exception):
         self.status, self.code = status, code
 
 
+class AccountGone(FmRejected):
+    """封面搭子明确回 404 unknown_subject：这个账号已注销或不存在。连不上、5xx、超时都不算。"""
+
+
 class InsufficientCredits(Exception):
     def __init__(self, balance, recharge_url):
         super().__init__('积分不够。')
@@ -98,6 +102,8 @@ class FmClient:
         # 日志记接口名、状态码和对方的错误码，方便排查密钥填错、回调地址没登记等问题。
         code = re.sub(r'[^A-Za-z0-9_.-]', '', str(data.get('error', '')))[:40]
         log.warning('封面搭子接口 %s 未成功：HTTP %s %s', operation, status, code)
+        if status == 404 and code == 'unknown_subject':
+            return AccountGone(status, code)
         if 400 <= status < 500:
             return FmRejected(status, code)
         return FmUnavailable()
@@ -149,14 +155,25 @@ class Credits:
                 self.cache = {key: value for key, value in self.cache.items() if value[0] > now}
             self.cache[subject] = (now + BALANCE_TTL, balance)
 
+    def account_gone(self, subject):
+        """封面搭子说这个账号已注销：删掉它在本站的全部会话（所有设备），清掉余额缓存。账号和研究数据不删。"""
+        removed = self.db.revoke_subject_sessions(subject)
+        with self.lock:
+            self.cache.pop(subject, None)
+        log.warning('封面搭子账号已注销或不可用，已让它在本站的 %s 个会话失效。', removed)
+
     def balance(self, subject):
-        """当前积分；查不到时返回 None，不影响页面。"""
+        """当前积分；暂时查不到（连不上、5xx、超时等）返回 None，不影响页面，按用户缓存 30 秒。
+        封面搭子明确说账号已注销时不缓存，删掉会话后抛 AccountGone，由调用方按未登录处理。"""
         with self.lock:
             cached = self.cache.get(subject)
         if cached and cached[0] > self.clock():
             return cached[1]
         try:
             value = self.client.balance(subject)
+        except AccountGone:
+            self.account_gone(subject)
+            raise
         except (FmUnavailable, FmRejected):
             value = None
         self.remember(subject, value)
@@ -182,9 +199,11 @@ class Credits:
             if error.balance is not None:
                 self.remember(subject, error.balance)
             raise
-        except FmRejected:
+        except FmRejected as error:
             # 包括 409 reference_closed（这个编号已经退过或关闭了）：按没扣成处理。
             self.db.decline_charge(reference)
+            if isinstance(error, AccountGone):
+                self.account_gone(subject)
             raise
         except FmUnavailable as error:
             if error.sent:
@@ -216,6 +235,10 @@ class Credits:
         row = self.db.credit_charge(job_id)
         if not row or row['state'] != 'charged':
             return None
+        if row['settled_at'] is not None:
+            # 这笔之前已经交付过结果：之后接续再结束（哪怕这次没产出）也不退，只记下这次结束已核对。
+            self.db.mark_settled(row['reference'])
+            return None
         try:
             delivered = self.delivered(job)
         except Exception:
@@ -236,12 +259,13 @@ class Credits:
             return None
         try:
             _, balance = self.client.refund(row['subject'], reference)
-        except FmRejected as error:
-            if error.status == 404 and error.code == 'unknown_subject':
-                # 用户在封面搭子注销了账号：这笔退不了，记为终态，不再重试。
-                self.db.void_charge(reference)
-                log.warning('封面搭子账号已注销，这笔积分退不了，已停止重试：%s', reference)
-                return None
+        except AccountGone:
+            # 用户在封面搭子注销了账号：这笔退不了，记为终态，不再重试；本站会话也一并失效。
+            self.db.void_charge(reference)
+            log.warning('封面搭子账号已注销，这笔积分退不了，已停止重试：%s', reference)
+            self.account_gone(row['subject'])
+            return None
+        except FmRejected:
             self.db.defer_charge(reference, backoff(row['attempts']))
             log.warning('积分退回暂未成功，稍后重试：%s', reference)
             return False

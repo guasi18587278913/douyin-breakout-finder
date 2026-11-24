@@ -505,16 +505,60 @@ class WebTests(unittest.TestCase):
         self.credits.retry_due()  # 新的那次结束按新的结束时间核对：有报告，这笔留着
         row=self.db.credit_charge(job['id']);self.assertEqual(row['state'],'charged');self.assertIsNotNone(row['settled_at'])
         self.assertEqual(self.fm.balances[subject_for('alice')],5)
-    def test_charge_for_deleted_fm_account_asks_to_log_in_again(self):
-        alice,a=self.client_for('alice');del self.fm.balances[subject_for('alice')]
+    def sessions_of(self,user_id):
+        with self.db.connection() as c:return c.execute('SELECT count(*) FROM sessions WHERE user_id=?',(user_id,)).fetchone()[0]
+    def test_charge_for_deleted_fm_account_signs_out_everywhere(self):
+        alice,a=self.client_for('alice');phone,_=self.client_for('alice');del self.fm.balances[subject_for('alice')]
         with self.live_ready():r=alice.post('/api/jobs',json={'topic':'AI自媒体','mode':'live'})
-        self.assertEqual(r.status_code,409);self.assertIn('封面搭子账号已不可用',r.json()['detail'])
+        self.assertEqual(r.status_code,401);self.assertIn('已注销或不可用',r.json()['detail'])
+        self.assertTrue(any(c.startswith('__Host-breakout_session=') and 'Max-Age=0' in c for c in r.headers.get_list('set-cookie')))
+        self.assertEqual(self.sessions_of(a['id']),0);self.assertEqual(phone.get('/api/jobs').status_code,401)
         self.assertEqual(self.db.jobs(a['id']),[]);self.assertEqual([c['state'] for c in self.charges()],['declined'])
+    def test_resume_charge_for_deleted_fm_account_signs_out(self):
+        client,user,job=self.live_job();self.finished_without_report(job);self.credits.settle(job['id'])
+        del self.fm.balances[subject_for('alice')]
+        r=client.post('/api/jobs/'+job['id']+'/resume',json={'credits':5})
+        self.assertEqual(r.status_code,401);self.assertIn('已注销或不可用',r.json()['detail'])
+        self.assertEqual(self.sessions_of(user['id']),0);self.assertEqual(self.db.job(job['id'])['status'],'error')
+        self.assertEqual([c['state'] for c in self.db.credit_charges(job['id'])],['refunded','declined'])
+    def test_deleted_fm_account_signs_out_every_device_on_page_load(self):
+        alice,a=self.client_for('alice');phone,_=self.client_for('alice');subject=subject_for('alice')
+        job=self.db.enqueue(a['id'],'示例','all','demo')
+        self.assertEqual(self.sessions_of(a['id']),2)
+        del self.fm.balances[subject]  # 用户在封面搭子注销了账号
+        now=time.monotonic();self.credits.clock=lambda:now+31  # 登录时查到的余额缓存过期
+        with self.assertLogs('webapp.credits','WARNING'):r=alice.get('/api/bootstrap')
+        data=r.json();self.assertIsNone(data['user']);self.assertIsNone(data['credits']);self.assertIn('已注销或不可用',data['notice'])
+        self.assertTrue(any(c.startswith('__Host-breakout_session=') and 'Max-Age=0' in c for c in r.headers.get_list('set-cookie')))
+        self.assertEqual(self.sessions_of(a['id']),0)
+        self.assertEqual(phone.get('/api/jobs').status_code,401);self.assertEqual(phone.get('/api/jobs/'+job['id']).status_code,401)
+        self.assertIsNotNone(self.db.job(job['id']))  # 研究数据不删
+        # “账号已注销”没有被缓存成“查不到”：账号要是恢复了，重新登录后会重新去查
+        self.assertNotIn(subject,self.credits.cache)
+        self.fm.balances[subject]=7;calls=self.fm.count('balance')
+        again,_=self.client_for('alice')
+        self.assertEqual(again.get('/api/bootstrap').json()['credits'],7);self.assertEqual(self.fm.count('balance'),calls+1)
+    def test_fm_outage_and_errors_keep_users_signed_in(self):
+        alice,a=self.client_for('alice');start=time.monotonic()
+        failures=[('连不上',lambda:self.fm.unreachable.add('balance')),('超时',lambda:self.fm.lost_reply.add('balance')),
+                  ('5xx',lambda:self.fm.errors.update({'balance':(500,{'error':'internal'})})),
+                  ('502 也带着 unknown_subject 字样',lambda:self.fm.errors.update({'balance':(502,{'error':'unknown_subject'})})),
+                  ('密钥不对',lambda:setattr(self.fm,'secret','another-secret-on-fm-side'))]
+        for step,(name,fail) in enumerate(failures,1):
+            self.fm.unreachable.clear();self.fm.lost_reply.clear();self.fm.errors.clear();self.fm.secret=FM_SECRET;fail()
+            self.credits.clock=lambda step=step:start+31*step
+            data=alice.get('/api/bootstrap').json()
+            self.assertEqual(data['user']['id'],a['id'],name);self.assertIsNone(data['credits'],name);self.assertIsNone(data['notice'],name)
+            self.assertEqual(self.sessions_of(a['id']),1,name);self.assertEqual(alice.get('/api/jobs').status_code,200,name)
+        self.fm.secret=FM_SECRET;self.fm.errors.update({'charge':(500,{'error':'internal'})})
+        with self.live_ready():r=alice.post('/api/jobs',json={'topic':'AI自媒体','mode':'live'})
+        self.assertEqual(r.status_code,503);self.assertEqual(self.sessions_of(a['id']),1)
     def test_refund_for_deleted_fm_account_becomes_void(self):
         client,user,job=self.live_job();self.finished_without_report(job)
         del self.fm.balances[subject_for('alice')]  # 用户在封面搭子注销了账号
         with self.assertLogs('webapp.credits','WARNING') as logs:self.credits.settle(job['id'])
         self.assertEqual(self.db.credit_charge(job['id'])['state'],'void');self.assertIn('已注销',''.join(logs.output))
+        self.assertEqual(self.sessions_of(user['id']),0);self.assertEqual(client.get('/api/jobs').status_code,401)
         with self.db.connection(True) as c:c.execute('UPDATE credit_charges SET next_attempt_at=0')
         self.credits.retry_due();self.assertEqual(self.fm.sent.count('refund'),1)
     def test_charge_on_closed_reference_is_treated_as_not_charged(self):
@@ -547,6 +591,44 @@ class WebTests(unittest.TestCase):
         for old in ('bootstrap','invite'):
             code,out,err=run(old);self.assertEqual((code,out),(2,''));self.assertIn('已改为手机号登录',err);self.assertIn('grant-admin',err)
         with self.db.connection() as c:self.assertEqual(c.execute('SELECT count(*) FROM invites').fetchone()[0],0)
+    def test_stopped_research_with_verified_results_keeps_the_charge(self):
+        client,user,job=self.live_job();subject=subject_for('alice')
+        # 跑到已经展示出已核验作品时用户停止：有结果，不退分
+        card={'target':{'id':'7000000000000000001','title':'合成作品','author_name':'合成作者','followers':800},'play_count':120000,'ratio':12.5}
+        self.db.claim();self.db.finish(job['id'],'cancelled','已停止研究，已经取得的数据已保存。',{'qualified':1,'usable_results':[card]})
+        folder=run_dir(self.settings,job['id']);folder.mkdir(parents=True);(folder/'state.json').write_text('{}')
+        self.credits.settle(job['id'])
+        row=self.db.credit_charge(job['id']);self.assertEqual(row['state'],'charged');self.assertIsNotNone(row['settled_at'])
+        self.assertEqual(self.fm.balances[subject],5)
+        # 接续跟着走：还扣着，不另扣
+        self.assertEqual(client.get('/api/jobs/'+job['id']).json()['resume_credits'],0)
+        self.assertEqual(client.post('/api/jobs/'+job['id']+'/resume',json={}).status_code,202);self.assertEqual(self.fm.count('charge'),1)
+        # 这次接续没跑出来（进度被清空）：这笔已经交付过结果，也不退
+        self.app.state.worker.execute(self.db.claim())
+        self.assertEqual(json.loads(self.db.job(job['id'])['progress_json']).get('usable_results'),[])
+        self.credits.retry_due()
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'charged');self.assertEqual(self.fm.balances[subject],5)
+        self.assertEqual(self.fm.sent.count('refund'),0)
+    def test_stopped_research_without_any_result_refunds(self):
+        client,user,job=self.live_job()
+        self.db.claim();self.db.finish(job['id'],'cancelled','已停止研究，已经取得的数据已保存。',{'qualified':0,'usable_results':[],'candidates':12})
+        self.credits.settle(job['id'])
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'refunded');self.assertEqual(self.fm.balances[subject_for('alice')],10)
+    def test_old_version_interrupted_research_is_settled_after_upgrade(self):
+        # 回退到旧版期间，旧版重启只把运行中的研究改成 interrupted、不写结束时间；新版启动时补上再结算。
+        client,user,job=self.live_job();self.db.claim()
+        with self.db.connection(True) as c:
+            c.execute("UPDATE jobs SET status='interrupted',message='服务已恢复，已保存的数据仍在；可以继续整理报告。',updated_at=?,finished_at=NULL WHERE id=?",(time.time()-60,job['id']))
+        other=self.db.enqueue(self.client_for('bob')[1]['id'],'旧数据','all','demo')
+        with self.db.connection(True) as c:c.execute("UPDATE jobs SET status='cancelled',finished_at=NULL WHERE id=?",(other['id'],))
+        self.credits.retry_due();self.assertEqual(self.db.credit_charge(job['id'])['state'],'charged')  # 补之前找不到
+        worker=self.app.state.worker;worker.start();self.addCleanup(worker.close)
+        deadline=time.time()+10
+        while time.time()<deadline and self.db.credit_charge(job['id'])['state']!='refunded':time.sleep(.05)
+        self.assertEqual(self.db.credit_charge(job['id'])['state'],'refunded');self.assertEqual(self.fm.balances[subject_for('alice')],10)
+        row=self.db.job(job['id']);self.assertEqual(row['finished_at'],row['updated_at'])
+        self.assertIsNone(self.db.job(other['id'])['finished_at'])  # 别的状态不碰
+        self.assertEqual(self.db.backfill_interrupted(),0)
     def test_two_refund_attempts_for_one_charge_send_one_request(self):
         client,user,job=self.live_job()
         self.assertTrue(self.db.queue_refund(job['id'],('charged',)))

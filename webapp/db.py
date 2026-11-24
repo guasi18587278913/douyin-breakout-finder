@@ -233,6 +233,11 @@ class Database:
                             (hashed(token),time.time())).fetchone()
         return dict(row) if row else None
 
+    def revoke_subject_sessions(self, subject):
+        """封面搭子账号已注销：删掉这个账号在本站的全部会话（所有设备）。账号和研究数据不删。返回删掉的会话数。"""
+        with self.connection(True) as c:
+            return c.execute('DELETE FROM sessions WHERE user_id IN (SELECT user_id FROM external_accounts WHERE subject=?)',(subject,)).rowcount
+
     def logout(self, token):
         with self.connection(True) as c: c.execute('DELETE FROM sessions WHERE token_hash=?', (hashed(token),))
 
@@ -279,8 +284,14 @@ class Database:
                 raise Conflict('积分记录对不上，这次研究没有开始。')
         return self.job(job_id,user_id)
 
+    def backfill_interrupted(self):
+        """回退到旧版（30540d8）期间被重启打断的研究只改了状态、没写结束时间，新版结算找不到它们。
+        启动时只给 status='interrupted' 且 finished_at 为空的补上 finished_at=updated_at，别的状态不碰。"""
+        with self.connection(True) as c:
+            return c.execute("UPDATE jobs SET finished_at=updated_at WHERE status='interrupted' AND finished_at IS NULL").rowcount
+
     def recover_interrupted(self):
-        # 记下结束时间：被重启打断的研究和出错、停止一样结算积分，没有可用报告就退（接续照旧不扣分）。
+        # 记下结束时间：被重启打断的研究和出错、停止一样结算积分，没有产出任何结果就退（接续时还扣着的不另扣）。
         with self.connection(True) as c:
             c.execute("UPDATE jobs SET status='interrupted',message='服务已恢复，已保存的数据仍在；可以继续整理报告。',updated_at=?,finished_at=? WHERE status='running'",(time.time(),time.time()))
 

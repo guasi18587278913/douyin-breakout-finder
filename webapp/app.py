@@ -20,12 +20,13 @@ from webapp.settings import Settings
 from webapp.db import Database, Conflict, InvalidInput, SETTLING
 from webapp.vault import Secrets
 from webapp.engine import Worker, ROOT, run_dir
-from webapp.credits import Credits, FmClient, FmRejected, FmUnavailable, InsufficientCredits, CODE, STATE
+from webapp.credits import AccountGone, Credits, FmClient, FmRejected, FmUnavailable, InsufficientCredits, CODE, STATE
 from core import StopRun
 from product import simple_brief
 
 STATE_SECONDS=600  # 封面搭子登录跳转用的 state 有效期
 PHONE_LOGIN='已改为手机号登录，请刷新页面后重新登录。'
+ACCOUNT_GONE='你的封面搭子账号已注销或不可用，请重新登录。'
 
 class Body(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -102,19 +103,24 @@ def create_app(settings=None,fm_transport=None):
                 # 接续要用几分：当前那笔还扣着就是 0；退过分了要重新扣
                 'resume_credits':credits.resume_cost(job['id']) if can_resume else 0}
     def delivered(job):
-        """研究是否已有可用报告：网页显示为 done/report_ready，或已有能读的报告。都不是就该退分。"""
-        view=public_job(job)
-        return view['status'] in ('done','report_ready') or view['report_ready']
+        """研究有没有产出结果：网页显示为 done/report_ready、已有能读的报告，或研究进度里已经展示过至少一条
+        已核验作品。研究没有产出任何结果才退回积分。"""
+        view=public_job(job);progress=view['progress']
+        shown=progress.get('usable_results') if isinstance(progress,dict) else None
+        return view['status'] in ('done','report_ready') or view['report_ready'] or bool(shown)
     def shortage(error):
         """积分不够时的 402：开始研究和接续用同一套文案。"""
         balance='' if error.balance is None else f'，你现在有 {error.balance} 分'
         return JSONResponse({'detail':f'积分不够：跑一次真实研究要 {settings.research_credits} 积分{balance}。请先去封面搭子充值。',
                              'balance':error.balance,'cost':settings.research_credits,'recharge_url':error.recharge_url or credits.recharge_url},402)
-    def charge_failed(error,what):
-        """扣分没成时的人话提示：封面搭子账号已注销单独说明，其余按连不上处理。"""
-        if isinstance(error,FmRejected) and error.status==404 and error.code=='unknown_subject':
-            return HTTPException(409,'你的封面搭子账号已不可用（可能已注销），请重新登录后再试。')
+    def charge_failed(what):
+        """扣分没成、封面搭子连不上或拒绝时的人话提示。"""
         return HTTPException(503,f'暂时连不上封面搭子的积分服务，{what}没有开始；万一已经扣了分，会自动退回。请稍后再试。')
+    def signed_out():
+        """封面搭子说账号已注销：会话已经全部删掉，这次请求按未登录返回，并清掉本机的会话 cookie。"""
+        response=JSONResponse({'detail':ACCOUNT_GONE},401)
+        response.delete_cookie(cookie,path='/',secure=not settings.dev,httponly=True,samesite='strict')
+        return response
     def limit(request,bucket,count,seconds):
         address=request.client.host if request.client else 'unknown'
         if not db.allow(bucket+':'+hashlib.sha256(address.encode()).hexdigest(),count,seconds):
@@ -192,15 +198,20 @@ def create_app(settings=None,fm_transport=None):
     def index():return FileResponse(ROOT/'webapp/static/index.html')
     @app.get('/api/bootstrap')
     def bootstrap(request:Request):
-        session=get_session(request)
+        session=get_session(request);balance=None;gone=False
+        # 积分从封面搭子查，按用户缓存 30 秒；暂时查不到时为 null，页面照常显示。
+        # 封面搭子明确说账号已注销时，它的会话已全部删掉，这次按未登录返回。
+        if session:
+            try:balance=credits.balance(session['subject'])
+            except AccountGone:session=None;gone=True
         token=session['csrf'] if session else anonymous_token()
         user={'id':session['user_id'],'username':session['username'],'role':session['role']} if session else None
         status=vault.status()
-        # 积分从封面搭子查，按用户缓存 30 秒；查不到时为 null，页面照常显示。
         response=JSONResponse({'user':user,'csrf':token,'ready':all(status.values()),'remaining':db.remaining(user['id']) if user else None,
-                               'credits':credits.balance(session['subject']) if session else None,
-                               'research_credits':settings.research_credits,'recharge_url':credits.recharge_url})
+                               'credits':balance,'research_credits':settings.research_credits,'recharge_url':credits.recharge_url,
+                               'notice':ACCOUNT_GONE if gone else None})
         if not session:response.set_cookie(anon,token,max_age=3600,secure=not settings.dev,httponly=True,samesite='strict',path='/')
+        if gone:response.delete_cookie(cookie,path='/',secure=not settings.dev,httponly=True,samesite='strict')
         return response
     # 旧的用户名密码注册、登录已停用；旧账号和研究数据留在库里，不删除。
     @app.post('/api/register')
@@ -252,7 +263,8 @@ def create_app(settings=None,fm_transport=None):
         job_id=uuid.uuid4().hex
         try:credits.charge(user['subject'],job_id)
         except InsufficientCredits as error:return shortage(error)
-        except (FmUnavailable,FmRejected) as error:raise charge_failed(error,'研究') from None
+        except AccountGone:return signed_out()
+        except (FmUnavailable,FmRejected):raise charge_failed('研究') from None
         try:job=db.enqueue(user['user_id'],body.topic.strip(),body.focus,'live',job_id=job_id,charged=job_id)
         except Exception as error:
             # 没入队（例如预检之后额度被别的请求占了）就马上退分；退不成的记为待退，由后台重试。
@@ -290,7 +302,8 @@ def create_app(settings=None,fm_transport=None):
         db.admit(job['user_id'],'resume')  # 只查有没有别的研究进行中；接续不占每日额度
         try:reference=credits.recharge(user['subject'],job_id)
         except InsufficientCredits as error:return shortage(error)
-        except (FmUnavailable,FmRejected) as error:raise charge_failed(error,'接续') from None
+        except AccountGone:return signed_out()
+        except (FmUnavailable,FmRejected):raise charge_failed('接续') from None
         try:resumed=db.resume(job_id,job['user_id'],allow_completed_repair=repair,charged=reference)
         except Exception as error:
             try:refunded=credits.refund_now(reference,('charging',))

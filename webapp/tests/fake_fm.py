@@ -27,6 +27,7 @@ class FakeFm:
         self.sent = []          # 网站发出的请求（含连不上的），只记接口名
         self.unreachable = set()  # 这些接口连不上（请求没送到）
         self.lost_reply = set()   # 这些接口照常处理，但回应在路上丢了（客户端只看到超时）
+        self.errors = {}          # 接口名 -> (状态码, JSON)，直接这样回，不处理请求（模拟 5xx 等）
         self.before = {}        # 接口名 -> 处理请求前顺带执行的函数，用来模拟并发
         self.lock = threading.RLock()
 
@@ -91,6 +92,9 @@ class FakeFm:
             self.sent.append(operation)
             if operation in self.unreachable:
                 raise httpx.ConnectError('fake fm unreachable', request=request)
+            if operation in self.errors:
+                status, body = self.errors[operation]
+                return httpx.Response(status, json=body)
             status, body = self.respond(operation, request.headers.get('authorization'), json.loads(request.content or b'{}'))
             if operation in self.lost_reply:
                 raise httpx.ReadTimeout('fake fm reply lost', request=request)

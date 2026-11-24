@@ -67,6 +67,7 @@ class Worker:
             self.lease.close();raise RuntimeError('Another worker owns this database.') from None
         from webapp.cached_analysis import recover_publications
         recover_publications(self.settings.data_dir)
+        self.db.backfill_interrupted()
         self.db.recover_interrupted()
         self.thread=threading.Thread(target=self.loop,name='research-worker',daemon=True);self.thread.start()
     def close(self):

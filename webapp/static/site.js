@@ -45,12 +45,13 @@ async function bootstrap(){
  const data=await api('/api/bootstrap');user=data.user;csrf=data.csrf;ready=data.ready;remaining=data.remaining||0;
  credits=typeof data.credits==='number'?data.credits:null;cost=typeof data.research_credits==='number'?data.research_credits:cost;rechargeUrl=safeLink(data.recharge_url)||rechargeUrl;renderCredits();
  for(const id of ['new-nav','history-nav','logout','account'])show(id,!!user);show('admin-nav',user?.role==='admin');
- if(!user){switchView('auth');if(location.hash==='#register'||location.hash.startsWith('#invite=')){history.replaceState(null,'','/');el('fm-login').focus();}return;}
+ // 封面搭子账号已注销时服务器会让会话失效，这里把原因告诉用户。
+ if(!user){switchView('auth');if(typeof data.notice==='string'&&data.notice)notice(data.notice);if(location.hash==='#register'||location.hash.startsWith('#invite=')){history.replaceState(null,'','/');el('fm-login').focus();}return;}
  const params=new URLSearchParams(location.hash.slice(1));const id=params.get('job');
  home();
  if(id){try{await openJob(id);}catch(error){notice(message(error));}}
 }
-function home(){switchView('home');history.replaceState(null,'','/');text('service-status',ready?`近24小时还可发起 ${remaining} 次研究 · 完成后会自动打开报告`:'研究服务正在配置。现在可以先体验一份合成示例。');/** @type {HTMLButtonElement} */(el('research-submit')).disabled=!ready||remaining===0;creditHint(ready&&credits!==null&&credits<cost?shortage(credits):'');}
+function home(){switchView('home');history.replaceState(null,'','/');text('service-status',ready?`近24小时还可发起 ${remaining} 次研究 · 完成后会自动打开报告 · 研究没有产出任何结果才退回积分`:'研究服务正在配置。现在可以先体验一份合成示例。');/** @type {HTMLButtonElement} */(el('research-submit')).disabled=!ready||remaining===0;creditHint(ready&&credits!==null&&credits<cost?shortage(credits):'');}
 /** @param {string} id */async function openJob(id){show('resume-hint',false);const requestVersion=++navigationVersion;const job=await api('/api/jobs/'+encodeURIComponent(id));if(requestVersion!==navigationVersion)return;switchView('progress');history.replaceState(null,'','/#job='+job.id);current=job;autoOpen=job.id;renderJob(job);schedule();}
 function schedule(){clearTimeout(poll);if(view==='progress'&&current&&['queued','running'].includes(current.status))poll=window.setTimeout(refreshJob,2200);}
 async function refreshJob(){if(!current||view!=='progress')return;const id=current.id,version=navigationVersion;try{const job=await api('/api/jobs/'+id);if(version!==navigationVersion||view!=='progress'||current?.id!==id)return;current=job;renderJob(job);}catch(error){if(version===navigationVersion)notice(message(error));}schedule();}
